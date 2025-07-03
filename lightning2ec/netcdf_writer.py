@@ -20,7 +20,7 @@ def make_li_output_path(
 
     Args:
         base_dir: Directory where outputs are stored.
-        li_times: Sequence of numpy.datetime64 times of matched events.
+        li_times: Sequence of numpy.datetime64 times of matched events in time.
         orbit_frame: Identifier for orbit and frame (e.g. '12345A').
         close_count: Number of events within the nadir distance threshold.
 

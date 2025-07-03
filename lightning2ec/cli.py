@@ -99,14 +99,14 @@ logger = configure_logging()
 @click.option(
     '--distance-threshold', 'distance_threshold_km',
     type=float,
-    default=2.5,
+    default=5,
     show_default=True,
     help="Distance threshold from CPR track in kilometers"
 )
 @click.option(
     '--time-threshold', 'time_threshold_s',
     type=int,
-    default=150,
+    default=300,
     show_default=True,
     help="Temporal threshold from CPR acquisition in seconds"
 )
@@ -156,7 +156,7 @@ def run_pipeline(
                 merged_li, cth, ec_times,
                 shifted_lat, shifted_lon,
                 satellite_lon, satellite_lat,
-                satellite_alt, integration_minutes
+                satellite_alt, time_threshold_s=time_threshold_s
             )
             if matched_ds is None:
                 logger.info(f"{orbit_frame}: no lightning matches found")
