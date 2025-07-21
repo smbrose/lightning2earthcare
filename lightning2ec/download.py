@@ -59,6 +59,9 @@ def download_li(
     collection = _DATASTORE.get_collection(coll_id)
     products = collection.search(dtstart=dt_start, dtend=dt_end)
     logger.info(f"Found {products.total_results} products in '{collection_name}'")
+    if products.total_results == 0:
+        logger.warning("Skipping download")
+        return []
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

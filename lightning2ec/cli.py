@@ -146,6 +146,10 @@ def run_pipeline(
             li_paths = download_li(
                 li_start, li_end, li_collection, li_base
             )
+            if not li_paths:
+                logger.info(f"{orbit_frame}: no Lightning data found")
+                continue
+            
             merged_li = merge_li_datasets(li_paths)
             shifted_lat, shifted_lon = apply_parallax_shift(
                 lon, lat, cth,
