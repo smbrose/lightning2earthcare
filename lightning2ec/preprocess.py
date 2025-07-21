@@ -50,16 +50,15 @@ def prepare_ec(cop_file: Path
         times: 1D array of time stamps (numpy.datetime64).
     """
     try:
-        ds = xr.open_dataset(cop_file, group='ScienceData', engine='netcdf4')
+        with xr.open_dataset(cop_file, group='ScienceData', engine='netcdf4') as ds:
+            # Extract variables
+            lon = ds.longitude.values
+            lat = ds.latitude.values
+            cth = ds.cloud_top_height.values
+            times = ds.time.values
     except Exception as e:
         logger.error(f"Failed to open EarthCARE COP file {cop_file}: {e}")
         raise
-
-    # Extract variables
-    lon = ds.longitude.values
-    lat = ds.latitude.values
-    cth = ds.cloud_top_height.values
-    times = ds.time.values
 
     # Mask out any columns with invalid coordinates
     valid_mask = ~np.isnan(lat).any(axis=0)

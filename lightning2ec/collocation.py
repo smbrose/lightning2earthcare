@@ -34,8 +34,9 @@ def merge_li_datasets(directories: List[Path]) -> xr.Dataset:
     datasets = []
     for bf in body_files:
         try:
-            ds = xr.open_dataset(bf)
-            datasets.append(ds)
+            with xr.open_dataset(bf) as ds:
+                ds_mem = ds.load()
+            datasets.append(ds_mem)
         except Exception as e:
             logger.warning(f"Failed to open BODY file {bf.name}: {e}")
 
