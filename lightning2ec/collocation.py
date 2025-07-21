@@ -8,6 +8,7 @@ from scipy.spatial import cKDTree
 from satpy.modifiers.parallax import get_parallax_corrected_lonlats
 from sklearn.metrics.pairwise import haversine_distances
 from pyorbital.orbital import A as EARTH_RADIUS
+from shapely.geometry import MultiPoint, Point
 
 logger = logging.getLogger(__name__)
 
@@ -51,29 +52,27 @@ def _buffer_li_indices(
     shifted_lon: np.ndarray,
 ) -> np.ndarray:
     """
-    Identify LI group indices within fixed ±0.5° spatial buffer around EarthCARE.
+    Identify LI group indices within a 0.5° buffer of the EarthCARE swath shape.
+
+    Builds a convex hull of all shifted_lat/shifted_lon points, buffers that
+    polygon by 0.5°, and then returns the indices of li_ds groups whose
+    lat/lon fall inside.
     """
-    # Fixed buffers
-    lat_buffer = 0.5
-    lon_buffer = 0.5
+    # Create convex hull of EarthCARE shifted coordinates
+    coords = np.column_stack([shifted_lon.ravel(), shifted_lat.ravel()])
+    pts = [tuple(pt) for pt in coords]
+    hull = MultiPoint(pts).convex_hull
+    region = hull.buffer(0.5)
 
-    # Compute EarthCARE extents + buffers
-    lat_min = float(np.nanmin(shifted_lat)) - lat_buffer
-    lat_max = float(np.nanmax(shifted_lat)) + lat_buffer
-    lon_min = float(np.nanmin(shifted_lon)) - lon_buffer
-    lon_max = float(np.nanmax(shifted_lon)) + lon_buffer
+    # Extract LI lat/lon and check which fall inside the buffered polygon
+    li_lat = li_ds.latitude.values
+    li_lon = li_ds.longitude.values
+    inside = []
+    for idx, (lat, lon) in enumerate(zip(li_lat, li_lon)):
+        if region.contains(Point(lon, lat)):
+            inside.append(idx)
 
-    # Extract LI arrays
-    li_lat  = li_ds.latitude.values
-    li_lon  = li_ds.longitude.values
-    li_time = li_ds.group_time.values
-
-    # Buffer mask
-    mask = (
-        (li_lat >= lat_min) & (li_lat <= lat_max) &
-        (li_lon >= lon_min) & (li_lon <= lon_max)
-    )
-    indices = np.where(mask)[0]
+    indices = np.array(inside, dtype=int)
     logger.info(f"Buffered LI selects {len(indices)} of {li_lat.size} total groups")
     return indices
 
