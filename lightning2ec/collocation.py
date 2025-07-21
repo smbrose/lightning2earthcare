@@ -179,7 +179,7 @@ def match_li_to_ec(
         )
         buffered_ds['ec_time_diff'] = (
             ('groups',), time_diff_arr,
-            {'long_name':'Time difference from EarthCARE'}
+            {'long_name':'Time difference from EarthCARE overpass'}
         )
 
         # Return buffered dataset and matched times
@@ -198,22 +198,23 @@ def compute_nadir_distances(
     time_threshold_s: float = 300
 ) -> Tuple[xr.Dataset, int]:
     """
-    Compute signed cross-track distances and count close events.
+    Compute distances of LI groups to the closest CPR track points and count close events.
 
     Args:
         matched_ds: xarray Dataset with parallax_corrected_lat/lon and ec_time_diff.
         cpr_file: path to CPR HDF5 for nadir coords.
         distance_threshold_km: spatial threshold for close events.
-        time_threshold_s: temporal threshold in seconds.
+        time_threshold_s: temporal threshold for close events in seconds.
 
     Returns:
         updated_ds: with new distance_from_nadir variable,
         count: number of groups within both thresholds.
     """
     try:
-        cpr_ds = xr.open_dataset(cpr_file, group='ScienceData', engine='netcdf4')
-        nadir_lat = cpr_ds.latitude.values
-        nadir_lon = cpr_ds.longitude.values
+        with xr.open_dataset(cpr_file, group='ScienceData', engine='netcdf4') as cpr_ds:
+            # Extract nadir coordinates
+            nadir_lat = cpr_ds.latitude.values
+            nadir_lon = cpr_ds.longitude.values
 
         # Prepare parallax-corrected coordinates
         par_lat = matched_ds.parallax_corrected_lat.values
@@ -221,8 +222,8 @@ def compute_nadir_distances(
         rad = np.radians
         coords = np.column_stack([rad(par_lat), rad(par_lon)])
 
-        # Allocate array for signed distances
-        signed_dists = np.full(par_lat.shape, np.nan)
+        # Allocate array for distances
+        dists = np.full(par_lat.shape, np.nan)
 
         # Compute only for finite coordinates
         valid_mask = np.isfinite(coords).all(axis=1)
@@ -233,27 +234,21 @@ def compute_nadir_distances(
             # Compute distances (radians → km)
             dists_rad = haversine_distances(coords_valid, nadir_coords)
             dists_km = dists_rad * EARTH_RADIUS
-
-            # Determine sign based on longitude difference
-            nearest_idx = np.argmin(dists_km, axis=1)
-            nearest_lon = nadir_lon[nearest_idx]
-            signs = np.sign(par_lon[valid_mask] - nearest_lon)
-            signed_dists[valid_mask] = signs * dists_km.min(axis=1)
+            dists[valid_mask] = dists_km.min(axis=1)
 
         # Assign distances into dataset
         updated_ds = matched_ds.copy()
         updated_ds['distance_from_nadir'] = xr.DataArray(
-            signed_dists,
+            dists,
             dims=['groups'],
             attrs={
-                'long_name': 'Signed cross-track distance to EarthCARE CPR track',
-                'units': 'km',
-                'description': 'Positive = east/right of track, Negative = west/left of track'
+                'long_name': 'Distance to the closest EarthCARE CPR track point',
+                'units': 'km'
             }
         )
 
         # Count close
-        close_mask = ~np.isnan(signed_dists) & (np.abs(signed_dists) <= distance_threshold_km)
+        close_mask = ~np.isnan(dists) & (dists <= distance_threshold_km)
         count = int(np.sum(close_mask))
         logger.info(f"Count within {distance_threshold_km}km & {time_threshold_s}s: {count}")
 
