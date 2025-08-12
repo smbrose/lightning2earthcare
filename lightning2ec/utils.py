@@ -58,7 +58,7 @@ def find_ec_file_pairs(
             logger.warning(f"Missing product directory: {prod_dir}")
             continue
 
-        for file_path in prod_dir.iterdir():
+        for file_path in sorted(prod_dir.iterdir()):
             try:
                 # Use "product/filename" so parse can match the pattern
                 rel = f"{product}/{file_path.name}"
@@ -77,9 +77,10 @@ def find_ec_file_pairs(
             entry[parsed['product']] = Path(product) / file_path.name
     # Filter only those with all products
     valid: Dict[str, Dict[str, Path]] = {}
-    for of_key, file_map in result.items():
+    for of_key in sorted(result):
+        file_map = result[of_key]
         if set(file_map.keys()) == set(products):
-            valid[of_key] = file_map
+            valid[of_key] = {p: file_map[p] for p in products}
         else:
             logger.debug(f"Skipping incomplete set {of_key}: found {list(file_map.keys())}")
 
