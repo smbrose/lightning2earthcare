@@ -8,7 +8,8 @@ from scipy.spatial import cKDTree
 from satpy.modifiers.parallax import get_parallax_corrected_lonlats
 from sklearn.metrics.pairwise import haversine_distances
 from pyorbital.orbital import A as EARTH_RADIUS
-from shapely.geometry import MultiPoint, Point
+from shapely.geometry import Polygon
+from shapely import vectorized
 
 logger = logging.getLogger(__name__)
 
@@ -50,30 +51,41 @@ def _buffer_li_indices(
     li_ds: xr.Dataset,
     shifted_lat: np.ndarray,
     shifted_lon: np.ndarray,
+    buffer_deg: float = 0.5,
 ) -> np.ndarray:
     """
     Identify LI group indices within a 0.5° buffer of the EarthCARE swath shape.
 
-    Builds a convex hull of all shifted_lat/shifted_lon points, buffers that
-    polygon by 0.5°, and then returns the indices of li_ds groups whose
-    lat/lon fall inside.
+    Returns indices of li_ds groups whose lat/lon fall inside buffered region.
     """
-    # Create convex hull of EarthCARE shifted coordinates
-    coords = np.column_stack([shifted_lon.ravel(), shifted_lat.ravel()])
-    pts = [tuple(pt) for pt in coords]
-    hull = MultiPoint(pts).convex_hull
-    region = hull.buffer(0.5)
+    nrows, ncols = shifted_lat.shape
 
-    # Extract LI lat/lon and check which fall inside the buffered polygon
+    left_edge  = [(shifted_lon[i, 0],        shifted_lat[i, 0])        for i in range(nrows)]
+    right_edge = [(shifted_lon[i, ncols-1], shifted_lat[i, ncols-1]) for i in range(nrows)]
+
+    ring = [(x, y) for x, y in (left_edge + right_edge[::-1])
+            if np.isfinite(x) and np.isfinite(y)]
+
+    outline = Polygon(ring)
+    region = outline.buffer(buffer_deg)
+
     li_lat = li_ds.latitude.values
     li_lon = li_ds.longitude.values
-    inside = []
-    for idx, (lat, lon) in enumerate(zip(li_lat, li_lon)):
-        if region.contains(Point(lon, lat)):
-            inside.append(idx)
 
-    indices = np.array(inside, dtype=int)
-    logger.info(f"Buffered LI selects {len(indices)} of {li_lat.size} total groups")
+    minx, miny, maxx, maxy = region.bounds
+    in_bbox = (li_lon >= minx) & (li_lon <= maxx) & (li_lat >= miny) & (li_lat <= maxy)
+    if not np.any(in_bbox):
+        return np.array([], dtype=int)
+
+    # Only points within bounding box:
+    li_lon_bbox = li_lon[in_bbox]
+    li_lat_bbox = li_lat[in_bbox]
+    indices_bbox = np.where(in_bbox)[0]
+
+    mask_in_poly = vectorized.contains(region, li_lon_bbox, li_lat_bbox)
+    indices = indices_bbox[mask_in_poly]
+
+    print(f"Buffered LI selects {len(indices)} of {li_lat.size} total groups")
     return indices
 
 
