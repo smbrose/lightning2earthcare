@@ -34,7 +34,7 @@ def make_li_output_path(
     count_all = len(times)
 
     # Directory per start date
-    date_dir = base_dir / times.min().strftime('%Y%m%d')
+    date_dir = base_dir #/ times.min().strftime('%Y%m%d')
     date_dir.mkdir(parents=True, exist_ok=True)
 
     filename = (

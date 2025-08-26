@@ -132,10 +132,11 @@ def run_pipeline(
         pairs = find_ec_file_pairs(date_dir, products, frames)
 
         for orbit_frame, file_map in pairs.items():
-            cop_file = date_dir / file_map[products[0]]
+            logger.info(f"Processing orbit frame: {orbit_frame}")
+            msi_file = date_dir / file_map[products[0]]
             cpr_file = date_dir / file_map[products[1]]
 
-            lon, lat, cth, ec_times = prepare_ec(cop_file)
+            lon, lat, cth, ec_times = prepare_ec(msi_file)
             within, li_start, li_end = is_within_li_range(
                 lon, ec_times, lon_min, lon_max, integration_minutes
             )

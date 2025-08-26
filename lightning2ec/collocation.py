@@ -60,11 +60,19 @@ def _buffer_li_indices(
     """
     nrows, ncols = shifted_lat.shape
 
-    left_edge  = [(shifted_lon[i, 0],        shifted_lat[i, 0])        for i in range(nrows)]
-    right_edge = [(shifted_lon[i, ncols-1], shifted_lat[i, ncols-1]) for i in range(nrows)]
+    # Finite in both lat & lon
+    finite = np.isfinite(shifted_lat) & np.isfinite(shifted_lon)
 
-    ring = [(x, y) for x, y in (left_edge + right_edge[::-1])
-            if np.isfinite(x) and np.isfinite(y)]
+    left_edge, right_edge = [], []
+    for i in range(nrows):
+        cols = np.flatnonzero(finite[i])
+        if cols.size == 0:
+            continue  # this row has only NaNs -> skip
+        jL, jR = cols[0], cols[-1]
+        left_edge.append((shifted_lon[i, jL], shifted_lat[i, jL]))
+        right_edge.append((shifted_lon[i, jR], shifted_lat[i, jR]))
+
+    ring = left_edge + right_edge[::-1]
 
     outline = Polygon(ring)
     region = outline.buffer(buffer_deg)

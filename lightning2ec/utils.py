@@ -107,6 +107,14 @@ def is_within_li_range(
     Returns:
         (within_range, start_time, end_time)
     """
+    # Compute download window
+    start_time = times[0] - np.timedelta64(integration_minutes, 'm')
+    end_time   = times[-1] + np.timedelta64(integration_minutes, 'm')
+
+    if lon.size == 0:
+        logger.warning("Longitude array is empty; treating as not within range.")
+        return False, start_time, end_time
+    
     lon_min_ec = float(np.nanmin(lon))
     lon_max_ec = float(np.nanmax(lon))
     logger.info(f"EarthCARE file longitude boundaries: min: {lon_min_ec}, max: {lon_max_ec}")
@@ -114,9 +122,5 @@ def is_within_li_range(
         (lon_min <= lon_min_ec <= lon_max) or
         (lon_min <= lon_max_ec <= lon_max)
     )
-
-    # Compute download window
-    start_time = times[0] - np.timedelta64(integration_minutes, 'm')
-    end_time   = times[-1] + np.timedelta64(integration_minutes, 'm')
 
     return within, start_time, end_time
