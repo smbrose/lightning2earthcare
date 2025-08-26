@@ -6,6 +6,7 @@ from .download import download_li
 from .preprocess import prepare_ec, merge_li_datasets, buffer_li
 from .utils import find_ec_file_pairs, is_within_li_range, configure_logging
 from .parallax import apply_parallax_shift
+from .clustering import cluster_li_groups
 from .collocation import (
     match_li_to_ec,
     compute_nadir_distances
@@ -162,10 +163,14 @@ def run_pipeline(
                 continue
 
             # Clustering
-
+            clustered_li_ds = cluster_li_groups(buf_li_ds,
+                                                eps=5.0,
+                                                time_weight=0.5,
+                                                min_samples=20,
+                                                lat_gap=0.25)
 
             matched_ds, matched_times = match_li_to_ec(
-                buf_li_ds, cth, ec_times,
+                clustered_li_ds, cth, ec_times,
                 shifted_lat, shifted_lon,
                 satellite_lon, satellite_lat,
                 satellite_alt, time_threshold_s=time_threshold_s
