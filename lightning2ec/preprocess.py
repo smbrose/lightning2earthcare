@@ -1,9 +1,12 @@
 import logging
 from pathlib import Path
+from typing import List, Tuple
 
 import numpy as np
 import xarray as xr
 from scipy.interpolate import griddata
+from shapely.geometry import Polygon
+from shapely import vectorized
 
 logger = logging.getLogger(__name__)
 
@@ -74,3 +77,90 @@ def prepare_ec(cop_file: Path
     cth_filled = interpolate_cloud_top_heights(cth_clipped)
 
     return lon_clipped, lat_clipped, cth_filled, times
+
+
+def merge_li_datasets(directories: List[Path]) -> xr.Dataset:
+    """
+    Combine multiple extracted LI directories into a single xarray Dataset of BODY files.
+
+    Args:
+        directories: List of Paths to folders containing LI BODY files.
+
+    Returns:
+        A concatenated xarray.Dataset along 'groups' dimension.
+    """
+    body_files = []
+    for folder in directories:
+        if folder.is_dir():
+            body_files.extend(folder.glob("*BODY*"))
+    if not body_files:
+        msg = "No BODY files found in provided LI directories"
+        logger.error(msg)
+        raise FileNotFoundError(msg)
+
+    datasets = []
+    for bf in body_files:
+        try:
+            with xr.open_dataset(bf, engine='netcdf4') as ds:
+                ds_mem = ds.load()
+            datasets.append(ds_mem)
+        except Exception as e:
+            logger.warning(f"Failed to open BODY file {bf.name}: {e}")
+
+    combined = xr.concat(datasets, dim='groups', combine_attrs='drop_conflicts')
+    logger.info(f"Merged {len(datasets)} BODY files into one dataset")
+    return combined
+
+
+def buffer_li(
+    li_ds: xr.Dataset,
+    shifted_lat: np.ndarray,
+    shifted_lon: np.ndarray,
+    buffer_deg: float = 0.5,
+) -> np.ndarray:
+    """
+    Identify LI group indices within a 0.5° buffer of the EarthCARE swath shape.
+
+    Returns indices of li_ds groups whose lat/lon fall inside buffered region.
+    """
+    nrows, ncols = shifted_lat.shape
+
+    # Finite in both lat & lon
+    finite = np.isfinite(shifted_lat) & np.isfinite(shifted_lon)
+
+    left_edge, right_edge = [], []
+    for i in range(nrows):
+        cols = np.flatnonzero(finite[i])
+        if cols.size == 0:
+            continue  # this row has only NaNs -> skip
+        jL, jR = cols[0], cols[-1]
+        left_edge.append((shifted_lon[i, jL], shifted_lat[i, jL]))
+        right_edge.append((shifted_lon[i, jR], shifted_lat[i, jR]))
+
+    ring = left_edge + right_edge[::-1]
+
+    outline = Polygon(ring)
+    region = outline.buffer(buffer_deg)
+
+    li_lat = li_ds.latitude.values
+    li_lon = li_ds.longitude.values
+
+    minx, miny, maxx, maxy = region.bounds
+    in_bbox = (li_lon >= minx) & (li_lon <= maxx) & (li_lat >= miny) & (li_lat <= maxy)
+    if not np.any(in_bbox):
+        return np.array([], dtype=int)
+
+    # Only points within bounding box:
+    li_lon_bbox = li_lon[in_bbox]
+    li_lat_bbox = li_lat[in_bbox]
+    indices_bbox = np.where(in_bbox)[0]
+
+    mask_in_poly = vectorized.contains(region, li_lon_bbox, li_lat_bbox)
+    indices = indices_bbox[mask_in_poly]
+
+    if indices.size == 0:
+        return None
+    else:
+        logger.info(f"Buffer LI selects {len(indices)} of {li_lat.size} total groups")
+        buffered_ds = li_ds.isel(groups=indices)
+        return buffered_ds

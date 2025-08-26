@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import List, Tuple
+from typing import Tuple
 
 import numpy as np
 import xarray as xr
@@ -8,93 +8,8 @@ from scipy.spatial import cKDTree
 from satpy.modifiers.parallax import get_parallax_corrected_lonlats
 from sklearn.metrics.pairwise import haversine_distances
 from pyorbital.orbital import A as EARTH_RADIUS
-from shapely.geometry import Polygon
-from shapely import vectorized
 
 logger = logging.getLogger(__name__)
-
-
-def merge_li_datasets(directories: List[Path]) -> xr.Dataset:
-    """
-    Combine multiple extracted LI directories into a single xarray Dataset of BODY files.
-
-    Args:
-        directories: List of Paths to folders containing LI BODY files.
-
-    Returns:
-        A concatenated xarray.Dataset along 'groups' dimension.
-    """
-    body_files = []
-    for folder in directories:
-        if folder.is_dir():
-            body_files.extend(folder.glob("*BODY*"))
-    if not body_files:
-        msg = "No BODY files found in provided LI directories"
-        logger.error(msg)
-        raise FileNotFoundError(msg)
-
-    datasets = []
-    for bf in body_files:
-        try:
-            with xr.open_dataset(bf) as ds:
-                ds_mem = ds.load()
-            datasets.append(ds_mem)
-        except Exception as e:
-            logger.warning(f"Failed to open BODY file {bf.name}: {e}")
-
-    combined = xr.concat(datasets, dim='groups', combine_attrs='drop_conflicts')
-    logger.info(f"Merged {len(datasets)} BODY files into one dataset")
-    return combined
-
-
-def _buffer_li_indices(
-    li_ds: xr.Dataset,
-    shifted_lat: np.ndarray,
-    shifted_lon: np.ndarray,
-    buffer_deg: float = 0.5,
-) -> np.ndarray:
-    """
-    Identify LI group indices within a 0.5° buffer of the EarthCARE swath shape.
-
-    Returns indices of li_ds groups whose lat/lon fall inside buffered region.
-    """
-    nrows, ncols = shifted_lat.shape
-
-    # Finite in both lat & lon
-    finite = np.isfinite(shifted_lat) & np.isfinite(shifted_lon)
-
-    left_edge, right_edge = [], []
-    for i in range(nrows):
-        cols = np.flatnonzero(finite[i])
-        if cols.size == 0:
-            continue  # this row has only NaNs -> skip
-        jL, jR = cols[0], cols[-1]
-        left_edge.append((shifted_lon[i, jL], shifted_lat[i, jL]))
-        right_edge.append((shifted_lon[i, jR], shifted_lat[i, jR]))
-
-    ring = left_edge + right_edge[::-1]
-
-    outline = Polygon(ring)
-    region = outline.buffer(buffer_deg)
-
-    li_lat = li_ds.latitude.values
-    li_lon = li_ds.longitude.values
-
-    minx, miny, maxx, maxy = region.bounds
-    in_bbox = (li_lon >= minx) & (li_lon <= maxx) & (li_lat >= miny) & (li_lat <= maxy)
-    if not np.any(in_bbox):
-        return np.array([], dtype=int)
-
-    # Only points within bounding box:
-    li_lon_bbox = li_lon[in_bbox]
-    li_lat_bbox = li_lat[in_bbox]
-    indices_bbox = np.where(in_bbox)[0]
-
-    mask_in_poly = vectorized.contains(region, li_lon_bbox, li_lat_bbox)
-    indices = indices_bbox[mask_in_poly]
-
-    print(f"Buffered LI selects {len(indices)} of {li_lat.size} total groups")
-    return indices
 
 
 def match_li_to_ec(
@@ -126,15 +41,10 @@ def match_li_to_ec(
         matched_times: array of group_time stamps for matched groups.
     """
     try:
-        # 1) Buffer preselection
-        buf_idx = _buffer_li_indices(li_ds, shifted_lat, shifted_lon)
-        if buf_idx.size == 0:
-            logger.info("No LI points in buffer region; skipping match.")
-            return None, None
-        buffered_ds = li_ds.isel(groups=buf_idx)
-        li_lat_buf = buffered_ds.latitude.values
-        li_lon_buf = buffered_ds.longitude.values
-        li_time_buf = buffered_ds.group_time.values
+        # 1) Prepare LI
+        li_lat_buf = li_ds.latitude.values
+        li_lon_buf = li_ds.longitude.values
+        li_time_buf = li_ds.group_time.values
 
         # 2) Prepare EC
         ec_coords = np.column_stack([shifted_lat.ravel(), shifted_lon.ravel()])
@@ -149,7 +59,7 @@ def match_li_to_ec(
         spatial_mask = dists != np.inf
 
         # Initialize output arrays for buffered length
-        n_buf = buf_idx.size
+        n_buf = li_lat_buf.size
         par_lat_arr   = np.full(n_buf, np.nan)
         par_lon_arr   = np.full(n_buf, np.nan)
         time_diff_arr = np.full(n_buf, np.timedelta64('NaT'), dtype='timedelta64[ns]')
@@ -188,23 +98,23 @@ def match_li_to_ec(
                 time_diff_arr[sel_buf_final] = td[time_mask]
 
         # 5) Attach new variables to buffered_ds
-        buffered_ds = buffered_ds.copy()
-        buffered_ds['parallax_corrected_lat'] = (
+        li_ds = li_ds.copy()
+        li_ds['parallax_corrected_lat'] = (
             ('groups',), par_lat_arr,
             {'long_name':'Parallax corrected latitude','units':'degrees_north'}
         )
-        buffered_ds['parallax_corrected_lon'] = (
+        li_ds['parallax_corrected_lon'] = (
             ('groups',), par_lon_arr,
             {'long_name':'Parallax corrected longitude','units':'degrees_east'}
         )
-        buffered_ds['ec_time_diff'] = (
+        li_ds['ec_time_diff'] = (
             ('groups',), time_diff_arr,
             {'long_name':'Time difference from EarthCARE overpass'}
         )
 
         # Return buffered dataset and matched times
-        matched_times = buffered_ds.group_time.values[np.where(~np.isnat(time_diff_arr))[0]]
-        return buffered_ds, matched_times
+        matched_times = li_ds.group_time.values[np.where(~np.isnat(time_diff_arr))[0]]
+        return li_ds, matched_times
 
     except Exception as e:
         logger.error(f"Error in match_li_to_ec: {e}")

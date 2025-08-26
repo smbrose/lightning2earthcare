@@ -3,11 +3,10 @@ from datetime import timedelta
 from pathlib import Path
 
 from .download import download_li
-from .preprocess import prepare_ec
+from .preprocess import prepare_ec, merge_li_datasets, buffer_li
 from .utils import find_ec_file_pairs, is_within_li_range, configure_logging
 from .parallax import apply_parallax_shift
 from .collocation import (
-    merge_li_datasets,
     match_li_to_ec,
     compute_nadir_distances
 )
@@ -156,9 +155,17 @@ def run_pipeline(
                 lon, lat, cth,
                 satellite_lon, satellite_lat, satellite_alt
             )
+            # Buffer preselection
+            buf_li_ds = buffer_li(merged_li, shifted_lat, shifted_lon)
+            if buf_li_ds is None:
+                logger.info(f"{orbit_frame}: no LI points in buffer region, skipping")
+                continue
+
+            # Clustering
+
 
             matched_ds, matched_times = match_li_to_ec(
-                merged_li, cth, ec_times,
+                buf_li_ds, cth, ec_times,
                 shifted_lat, shifted_lon,
                 satellite_lon, satellite_lat,
                 satellite_alt, time_threshold_s=time_threshold_s
