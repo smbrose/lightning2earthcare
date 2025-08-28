@@ -1,8 +1,11 @@
+import logging
 import numpy as np
 import pandas as pd
 import xarray as xr
 from sklearn.cluster import DBSCAN
 from pyproj import Transformer
+
+logger = logging.getLogger(__name__)
 
 def cluster_li_groups(
     li_ds: xr.Dataset,
@@ -18,7 +21,7 @@ def cluster_li_groups(
     Parameters
     ----------
     li_ds : xr.Dataset
-    eps_km : float
+    eps : float
         DBSCAN eps in kilometers (applies to projected x/y). Time dimension is weighted separately.
     time_weight : float
         Multiplier for time to balance against kms in (x,y).
@@ -84,8 +87,16 @@ def cluster_li_groups(
     if all_parts:
         labels_all = pd.concat(all_parts, ignore_index=True)
         label_map = dict(zip(labels_all["id"], labels_all["cluster_id"]))
+        unique_clusters = np.unique(labels_all["cluster_id"].values)
+        n_clusters_total = len(unique_clusters[unique_clusters != -1])
+        if n_clusters_total == 0:
+            logger.info("No clusters found (all points classified as noise).")
+            return None
+        else:
+            logger.info(f"Total clusters found: {n_clusters_total}")
     else:
-        label_map = {}
+        logger.info("No clusters found (no valid points).")
+        return None
 
     # Map back to dataset order
     mapped = pd.Series(ids).map(label_map).fillna(-1).astype("int64").values
@@ -96,7 +107,7 @@ def cluster_li_groups(
         dims=li_ds["group_id"].dims,
         attrs={
             "long_name": "Cluster ID",
-            "description": f"DBSCAN clustering (eps_km={eps}, time_weight={time_weight}, min_samples={min_samples}); -1 = noise",
+            "description": f"DBSCAN clustering (eps={eps}, time_weight={time_weight}, min_samples={min_samples}); -1 = noise",
             "units": "1",
         },
     )

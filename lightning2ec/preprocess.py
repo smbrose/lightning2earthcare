@@ -4,6 +4,7 @@ from typing import List, Tuple
 
 import numpy as np
 import xarray as xr
+import glob
 from scipy.interpolate import griddata
 from shapely.geometry import Polygon
 from shapely import vectorized
@@ -79,36 +80,39 @@ def prepare_ec(cop_file: Path
     return lon_clipped, lat_clipped, cth_filled, times
 
 
-def merge_li_datasets(directories: List[Path]) -> xr.Dataset:
+def merge_li_datasets(li_paths: list[Path]) -> xr.Dataset | None:
     """
     Combine multiple extracted LI directories into a single xarray Dataset of BODY files.
 
     Args:
-        directories: List of Paths to folders containing LI BODY files.
+        li_paths: List of Paths to folders containing LI BODY files.
 
     Returns:
         A concatenated xarray.Dataset along 'groups' dimension.
     """
-    body_files = []
-    for folder in directories:
-        if folder.is_dir():
-            body_files.extend(folder.glob("*BODY*"))
-    if not body_files:
-        msg = "No BODY files found in provided LI directories"
-        logger.error(msg)
-        raise FileNotFoundError(msg)
-
     datasets = []
-    for bf in body_files:
-        try:
-            with xr.open_dataset(bf, engine='netcdf4') as ds:
-                ds_mem = ds.load()
-            datasets.append(ds_mem)
-        except Exception as e:
-            logger.warning(f"Failed to open BODY file {bf.name}: {e}")
+    n_found = 0
+    n_ok = 0
+    for p in li_paths:
+        for nc in sorted(glob.glob(str(p / "*BODY*.nc"))):
+            n_found += 1
+            try:
+                ds = xr.open_dataset(nc, engine="netcdf4")
+                datasets.append(ds)
+                n_ok += 1
+            except Exception as e:
+                logger.warning(f"Failed to open BODY file {nc}: {e}")
 
-    combined = xr.concat(datasets, dim='groups', combine_attrs='drop_conflicts')
-    logger.info(f"Merged {len(datasets)} BODY files into one dataset")
+    if not datasets:
+        logger.info(f"merge_li_datasets: 0/{n_found} BODY files opened successfully; returning None.")
+        return None
+
+    logger.info(f"merge_li_datasets: opened {n_ok}/{n_found} BODY files; concatenating.")
+    try:
+        combined = xr.concat(datasets, dim="groups", combine_attrs="drop_conflicts")
+    finally:
+        for ds in datasets:
+            ds.close()
     return combined
 
 
@@ -148,7 +152,7 @@ def buffer_li(
     minx, miny, maxx, maxy = region.bounds
     in_bbox = (li_lon >= minx) & (li_lon <= maxx) & (li_lat >= miny) & (li_lat <= maxy)
     if not np.any(in_bbox):
-        return np.array([], dtype=int)
+        return None
 
     # Only points within bounding box:
     li_lon_bbox = li_lon[in_bbox]

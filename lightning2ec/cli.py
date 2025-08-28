@@ -62,19 +62,19 @@ logger = configure_logging()
 )
 @click.option(
     '--lon-min',
-    default=-80,
+    default=-60,
     show_default=True,
     help="Minimum longitude for Lightning matching"
 )
 @click.option(
     '--lon-max',
-    default=80,
+    default=60,
     show_default=True,
     help="Maximum longitude for Lightning matching"
 )
 @click.option(
     '--integration', 'integration_minutes',
-    default=30,
+    default=60,
     show_default=True,
     help="Half-window of LI integration in minutes"
 )
@@ -152,6 +152,10 @@ def run_pipeline(
                 continue
             
             merged_li = merge_li_datasets(li_paths)
+            if merged_li is None:
+                logger.info(f"{orbit_frame}: no usable Lightning BODY files to merge; skipping")
+                continue
+
             shifted_lat, shifted_lon = apply_parallax_shift(
                 lon, lat, cth,
                 satellite_lon, satellite_lat, satellite_alt
@@ -168,6 +172,9 @@ def run_pipeline(
                                                 time_weight=0.5,
                                                 min_samples=20,
                                                 lat_gap=0.25)
+            if clustered_li_ds is None:
+                logger.info(f"{orbit_frame}: no LI clusters found, skipping")
+                continue
 
             matched_ds, matched_times = match_li_to_ec(
                 clustered_li_ds, cth, ec_times,
