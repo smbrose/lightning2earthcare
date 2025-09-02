@@ -7,6 +7,71 @@ from pyproj import Transformer
 
 logger = logging.getLogger(__name__)
 
+
+def filter_clusters_by_quality(
+    ds: xr.Dataset,
+    cluster_bad_threshold: float = 0.25
+) -> xr.Dataset:
+    """
+    Filters out low-quality clusters and groups based on flag variables.
+    Drops flag and auxiliary variables after filtering.
+
+    Keeps only groups where:
+    - All flag values are 0
+    - Belong to a cluster that has <= `cluster_bad_threshold` proportion of bad groups
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset with 'cluster_id' and flag variables.
+    cluster_bad_threshold : float
+        Threshold above which clusters are considered bad and removed.
+
+    Returns
+    -------
+    xr.Dataset
+        Cleaned dataset with only high-quality groups and clusters.
+    """
+    cluster_id_var = "cluster_id"
+    flag_vars = [
+        "l1b_missing_warning",
+        "l1b_geolocation_warning",
+        "l1b_radiometric_warning"
+    ]
+    auxiliary_vars = [
+        "auxiliary_dataset_identifier",
+        "auxiliary_dataset_status",
+        "group_filter_qa"
+    ]
+
+    # Create per-group mask
+    quality_mask = np.ones(ds.sizes["groups"], dtype=bool)
+    for flag in flag_vars:
+        quality_mask &= ds[flag].values == 0
+
+    cluster_ids = ds[cluster_id_var].values
+    df = ds[[cluster_id_var]].to_dataframe().reset_index()
+    df["is_bad"] = ~quality_mask
+    df = df[df[cluster_id_var] != -1]
+
+    # Evaluate per-cluster bad group ratio
+    bad_rates = df.groupby(cluster_id_var)["is_bad"].mean()
+    bad_clusters = bad_rates[bad_rates > cluster_bad_threshold].index.values
+
+    is_in_bad_cluster = np.isin(cluster_ids, bad_clusters)
+    final_mask = (~is_in_bad_cluster) & quality_mask
+    logger.info(f"Dropped {len(bad_clusters)} of {bad_rates.size} clusters for quality issues.")
+
+    # Subset dataset
+    ds = ds.isel(groups=final_mask)
+
+    # Drop flag and auxiliary variables
+    vars_to_drop = [v for v in flag_vars + auxiliary_vars if v in ds.variables]
+    ds = ds.drop_vars(vars_to_drop)
+
+    return ds
+
+
 def cluster_li_groups(
     li_ds: xr.Dataset,
     eps: float = 5.0,
@@ -111,4 +176,8 @@ def cluster_li_groups(
             "units": "1",
         },
     )
+    
+    # Filter out bad groups and clusters based on quality
+    out = filter_clusters_by_quality(out)
+
     return out
