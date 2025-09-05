@@ -9,9 +9,9 @@ from .parallax import apply_parallax_shift
 from .clustering import cluster_li_groups
 from .collocation import (
     match_li_to_ec,
-    compute_nadir_distances
+    build_cpr_summary
 )
-from .netcdf_writer import make_li_output_path, write_netcdf
+from .netcdf_writer import write_li_netcdf, write_track_netcdf
 
 logger = configure_logging()
 
@@ -186,15 +186,14 @@ def run_pipeline(
                 logger.info(f"{orbit_frame}: no lightning matches found")
                 continue
 
-            final_ds, close_count = compute_nadir_distances(
+            final_li_ds, close_count, track_ds = build_cpr_summary(
                 matched_ds, cpr_file,
                 distance_threshold_km=distance_threshold_km,
                 time_threshold_s=time_threshold_s
             )
-            output_file = make_li_output_path(
-                li_base, matched_times, orbit_frame, close_count
-            )
-            write_netcdf(final_ds, output_file)
+
+            write_li_netcdf(final_li_ds, li_base, orbit_frame, close_count)
+            write_track_netcdf(track_ds, li_base, orbit_frame, close_count)
 
         current_date += timedelta(days=1)
 
