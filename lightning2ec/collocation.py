@@ -122,22 +122,6 @@ def match_li_to_ec(
         return None, None
 
 
-# --- helper: per-CPR matching on a small LI subset ---
-def match_li_to_cpr_sample(
-    cpr_lat: float, cpr_lon: float,
-    li_lat_sub: np.ndarray, li_lon_sub: np.ndarray,
-    dist_loose_km: float, dist_strict_km: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return boolean masks (loose, strict) for the LI subset vs one CPR point."""
-    # vector haversine to one point
-    d_rad = haversine_distances(
-        np.radians([[cpr_lat, cpr_lon]]),
-        np.column_stack([np.radians(li_lat_sub), np.radians(li_lon_sub)])
-    )[0]
-    d_km = d_rad * EARTH_RADIUS
-    return (d_km <= dist_loose_km), (d_km <= dist_strict_km)
-
-
 # --- main: build summary; time-window first, then per-CPR helper ---
 def build_cpr_summary(
     matched_ds: xr.Dataset, cpr_file: Path, distance_threshold_km=5.0, time_threshold_s=300
