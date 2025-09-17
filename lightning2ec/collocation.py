@@ -9,7 +9,6 @@ from satpy.modifiers.parallax import get_parallax_corrected_lonlats
 from sklearn.metrics.pairwise import haversine_distances
 from pyorbital.orbital import A as EARTH_RADIUS
 import json
-from collections import Counter
 
 logger = logging.getLogger(__name__)
 

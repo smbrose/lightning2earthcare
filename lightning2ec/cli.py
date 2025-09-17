@@ -1,6 +1,7 @@
 import click
 from datetime import timedelta
 from pathlib import Path
+import numpy as np
 
 from .download import download_li
 from .preprocess import prepare_ec, merge_li_datasets, buffer_li
