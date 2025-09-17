@@ -194,7 +194,8 @@ def run_pipeline(
             )
 
             write_li_netcdf(final_li_ds, li_base, orbit_frame, close_count)
-            write_track_netcdf(track_ds, li_base, orbit_frame, close_count)
+            if np.max(track_ds.li_count_loose.values) > 0:
+                write_track_netcdf(track_ds, li_base, orbit_frame, close_count)
 
         current_date += timedelta(days=1)
 
