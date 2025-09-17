@@ -146,6 +146,14 @@ def cluster_li_groups(
         if np.any(pos):
             label_offset = labels[pos].max() + 1
 
+        # reassign clusters with <20 members to noise
+        if np.any(pos):
+            unique, counts = np.unique(labels[pos], return_counts=True)
+            small_clusters = unique[counts < 20]
+            if small_clusters.size:
+                mask_small = np.isin(labels, small_clusters)
+                labels[mask_small] = -1
+
         part["cluster_id"] = labels
         all_parts.append(part[["id", "cluster_id"]])
 
