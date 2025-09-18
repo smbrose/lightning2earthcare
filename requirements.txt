@@ -1,0 +1,12 @@
+click==8.1.7
+eumdac==2.2.3
+numpy==2.0.2
+pandas==2.2.3
+pyorbital==1.8.3
+pyproj==3.6.1
+satpy==0.51.0
+scikit-learn==1.6.0
+scipy==1.14.1
+shapely==2.0.6
+trollsift==0.5.1
+xarray==2024.9.0
