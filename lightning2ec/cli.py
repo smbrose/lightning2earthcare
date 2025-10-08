@@ -1,17 +1,18 @@
 import click
 from datetime import timedelta
 from pathlib import Path
+import numpy as np
 
 from .download import download_li
-from .preprocess import prepare_ec
+from .preprocess import prepare_ec, merge_li_datasets, buffer_li
 from .utils import find_ec_file_pairs, is_within_li_range, configure_logging
 from .parallax import apply_parallax_shift
+from .clustering import cluster_li_groups
 from .collocation import (
-    merge_li_datasets,
     match_li_to_ec,
-    compute_nadir_distances
+    build_cpr_summary
 )
-from .netcdf_writer import make_li_output_path, write_netcdf
+from .netcdf_writer import write_li_netcdf, write_track_netcdf
 
 logger = configure_logging()
 
@@ -62,19 +63,19 @@ logger = configure_logging()
 )
 @click.option(
     '--lon-min',
-    default=-80,
+    default=-60,
     show_default=True,
     help="Minimum longitude for Lightning matching"
 )
 @click.option(
     '--lon-max',
-    default=80,
+    default=60,
     show_default=True,
     help="Maximum longitude for Lightning matching"
 )
 @click.option(
     '--integration', 'integration_minutes',
-    default=30,
+    default=60,
     show_default=True,
     help="Half-window of LI integration in minutes"
 )
@@ -132,10 +133,11 @@ def run_pipeline(
         pairs = find_ec_file_pairs(date_dir, products, frames)
 
         for orbit_frame, file_map in pairs.items():
-            cop_file = date_dir / file_map[products[0]]
+            logger.info(f"Processing orbit frame: {orbit_frame}")
+            msi_file = date_dir / file_map[products[0]]
             cpr_file = date_dir / file_map[products[1]]
 
-            lon, lat, cth, ec_times = prepare_ec(cop_file)
+            lon, lat, cth, ec_times = prepare_ec(msi_file)
             within, li_start, li_end = is_within_li_range(
                 lon, ec_times, lon_min, lon_max, integration_minutes
             )
@@ -151,13 +153,32 @@ def run_pipeline(
                 continue
             
             merged_li = merge_li_datasets(li_paths)
+            if merged_li is None:
+                logger.info(f"{orbit_frame}: no usable Lightning BODY files to merge; skipping")
+                continue
+
             shifted_lat, shifted_lon = apply_parallax_shift(
                 lon, lat, cth,
                 satellite_lon, satellite_lat, satellite_alt
             )
+            # Buffer preselection
+            buf_li_ds = buffer_li(merged_li, shifted_lat, shifted_lon)
+            if buf_li_ds is None:
+                logger.info(f"{orbit_frame}: no LI points in buffer region, skipping")
+                continue
+
+            # Clustering
+            clustered_li_ds = cluster_li_groups(buf_li_ds,
+                                                eps=5.0,
+                                                time_weight=0.5,
+                                                min_samples=20,
+                                                lat_gap=0.25)
+            if clustered_li_ds is None:
+                logger.info(f"{orbit_frame}: no LI clusters found, skipping")
+                continue
 
             matched_ds, matched_times = match_li_to_ec(
-                merged_li, cth, ec_times,
+                clustered_li_ds, cth, ec_times,
                 shifted_lat, shifted_lon,
                 satellite_lon, satellite_lat,
                 satellite_alt, time_threshold_s=time_threshold_s
@@ -166,15 +187,15 @@ def run_pipeline(
                 logger.info(f"{orbit_frame}: no lightning matches found")
                 continue
 
-            final_ds, close_count = compute_nadir_distances(
+            final_li_ds, close_count, track_ds = build_cpr_summary(
                 matched_ds, cpr_file,
                 distance_threshold_km=distance_threshold_km,
                 time_threshold_s=time_threshold_s
             )
-            output_file = make_li_output_path(
-                li_base, matched_times, orbit_frame, close_count
-            )
-            write_netcdf(final_ds, output_file)
+
+            write_li_netcdf(final_li_ds, li_base, orbit_frame, close_count)
+            if np.max(track_ds.li_count_loose.values) > 0:
+                write_track_netcdf(track_ds, li_base, orbit_frame, close_count)
 
         current_date += timedelta(days=1)
 

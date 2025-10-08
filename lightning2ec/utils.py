@@ -58,7 +58,7 @@ def find_ec_file_pairs(
             logger.warning(f"Missing product directory: {prod_dir}")
             continue
 
-        for file_path in prod_dir.iterdir():
+        for file_path in sorted(prod_dir.iterdir()):
             try:
                 # Use "product/filename" so parse can match the pattern
                 rel = f"{product}/{file_path.name}"
@@ -77,9 +77,10 @@ def find_ec_file_pairs(
             entry[parsed['product']] = Path(product) / file_path.name
     # Filter only those with all products
     valid: Dict[str, Dict[str, Path]] = {}
-    for of_key, file_map in result.items():
+    for of_key in sorted(result):
+        file_map = result[of_key]
         if set(file_map.keys()) == set(products):
-            valid[of_key] = file_map
+            valid[of_key] = {p: file_map[p] for p in products}
         else:
             logger.debug(f"Skipping incomplete set {of_key}: found {list(file_map.keys())}")
 
@@ -106,6 +107,14 @@ def is_within_li_range(
     Returns:
         (within_range, start_time, end_time)
     """
+    # Compute download window
+    start_time = times[0] - np.timedelta64(integration_minutes, 'm')
+    end_time   = times[-1] + np.timedelta64(integration_minutes, 'm')
+
+    if lon.size == 0:
+        logger.warning("Longitude array is empty; treating as not within range.")
+        return False, start_time, end_time
+    
     lon_min_ec = float(np.nanmin(lon))
     lon_max_ec = float(np.nanmax(lon))
     logger.info(f"EarthCARE file longitude boundaries: min: {lon_min_ec}, max: {lon_max_ec}")
@@ -113,9 +122,5 @@ def is_within_li_range(
         (lon_min <= lon_min_ec <= lon_max) or
         (lon_min <= lon_max_ec <= lon_max)
     )
-
-    # Compute download window
-    start_time = times[0] - np.timedelta64(integration_minutes, 'm')
-    end_time   = times[-1] + np.timedelta64(integration_minutes, 'm')
 
     return within, start_time, end_time

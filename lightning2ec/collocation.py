@@ -1,17 +1,24 @@
 import logging
 from pathlib import Path
+<<<<<<< HEAD
 from typing import List, Tuple
 import os 
+=======
+from typing import Tuple
+>>>>>>> 0e6b0da6f811c17875ab746ea44a876c1980aacf
 import numpy as np
 import xarray as xr
+import pandas as pd
 from scipy.spatial import cKDTree
 from satpy.modifiers.parallax import get_parallax_corrected_lonlats
 from sklearn.metrics.pairwise import haversine_distances
 from pyorbital.orbital import A as EARTH_RADIUS
+import json
 
 logger = logging.getLogger(__name__)
 
 
+<<<<<<< HEAD
 def merge_li_datasets(directories: List[Path]) -> xr.Dataset:
     """
     Combine multiple extracted LI directories into a single xarray Dataset of BODY files.
@@ -94,6 +101,8 @@ def _buffer_li_indices(
     return indices
 
 
+=======
+>>>>>>> 0e6b0da6f811c17875ab746ea44a876c1980aacf
 def match_li_to_ec(
     li_ds: xr.Dataset,
     cth: np.ndarray,
@@ -123,15 +132,10 @@ def match_li_to_ec(
         matched_times: array of group_time stamps for matched groups.
     """
     try:
-        # 1) Buffer preselection
-        buf_idx = _buffer_li_indices(li_ds, shifted_lat, shifted_lon)
-        if buf_idx.size == 0:
-            logger.info("No LI points in buffer region; skipping match.")
-            return None, None
-        buffered_ds = li_ds.isel(groups=buf_idx)
-        li_lat_buf = buffered_ds.latitude.values
-        li_lon_buf = buffered_ds.longitude.values
-        li_time_buf = buffered_ds.group_time.values
+        # 1) Prepare LI
+        li_lat_buf = li_ds.latitude.values
+        li_lon_buf = li_ds.longitude.values
+        li_time_buf = li_ds.group_time.values
 
         # 2) Prepare EC
         ec_coords = np.column_stack([shifted_lat.ravel(), shifted_lon.ravel()])
@@ -146,7 +150,7 @@ def match_li_to_ec(
         spatial_mask = dists != np.inf
 
         # Initialize output arrays for buffered length
-        n_buf = buf_idx.size
+        n_buf = li_lat_buf.size
         par_lat_arr   = np.full(n_buf, np.nan)
         par_lon_arr   = np.full(n_buf, np.nan)
         time_diff_arr = np.full(n_buf, np.timedelta64('NaT'), dtype='timedelta64[ns]')
@@ -185,97 +189,186 @@ def match_li_to_ec(
                 time_diff_arr[sel_buf_final] = td[time_mask]
 
         # 5) Attach new variables to buffered_ds
-        buffered_ds = buffered_ds.copy()
-        buffered_ds['parallax_corrected_lat'] = (
+        li_ds = li_ds.copy()
+        li_ds['parallax_corrected_lat'] = (
             ('groups',), par_lat_arr,
             {'long_name':'Parallax corrected latitude','units':'degrees_north'}
         )
-        buffered_ds['parallax_corrected_lon'] = (
+        li_ds['parallax_corrected_lon'] = (
             ('groups',), par_lon_arr,
             {'long_name':'Parallax corrected longitude','units':'degrees_east'}
         )
-        buffered_ds['ec_time_diff'] = (
+        li_ds['ec_time_diff'] = (
             ('groups',), time_diff_arr,
-            {'long_name':'Time difference from EarthCARE'}
+            {'long_name':'Time difference from EarthCARE overpass'}
         )
 
         # Return buffered dataset and matched times
-        matched_times = buffered_ds.group_time.values[np.where(~np.isnat(time_diff_arr))[0]]
-        return buffered_ds, matched_times
+        matched_times = li_ds.group_time.values[np.where(~np.isnat(time_diff_arr))[0]]
+        return li_ds, matched_times
 
     except Exception as e:
         logger.error(f"Error in match_li_to_ec: {e}")
         return None, None
 
 
-def compute_nadir_distances(
-    matched_ds: xr.Dataset,
-    cpr_file: Path,
-    distance_threshold_km: float = 5,
-    time_threshold_s: float = 300
-) -> Tuple[xr.Dataset, int]:
-    """
-    Compute signed cross-track distances and count close events.
+# --- main: build summary; time-window first, then per-CPR helper ---
+def build_cpr_summary(
+    matched_ds: xr.Dataset, cpr_file: Path, distance_threshold_km=5.0, time_threshold_s=300
+) -> tuple[xr.Dataset, int, xr.Dataset]:
+    # --- load CPR + LI
+    with xr.open_dataset(cpr_file, group="ScienceData", engine="netcdf4") as cpr:
+        c_lat = np.asarray(cpr["latitude"].values, float)
+        c_lon = np.asarray(cpr["longitude"].values, float)
+        c_tim = np.asarray(pd.to_datetime(cpr["time"].values))
 
-    Args:
-        matched_ds: xarray Dataset with parallax_corrected_lat/lon and ec_time_diff.
-        cpr_file: path to CPR HDF5 for nadir coords.
-        distance_threshold_km: spatial threshold for close events.
-        time_threshold_s: temporal threshold in seconds.
+    li_lat = np.asarray(matched_ds["parallax_corrected_lat"].values, float)
+    li_lon = np.asarray(matched_ds["parallax_corrected_lon"].values, float)
+    li_tim = np.asarray(pd.to_datetime(matched_ds["group_time"].values))
+    li_clu = np.asarray(matched_ds["cluster_id"].values)
 
-    Returns:
-        updated_ds: with new distance_from_nadir variable,
-        count: number of groups within both thresholds.
-    """
-    try:
-        cpr_ds = xr.open_dataset(cpr_file, group='ScienceData', engine='netcdf4')
-        nadir_lat = cpr_ds.latitude.values
-        nadir_lon = cpr_ds.longitude.values
+    n_li, n_cpr = li_lat.size, c_lat.size
+    valid_li = np.isfinite(li_lat) & np.isfinite(li_lon) & ~pd.isna(li_tim)
 
-        # Prepare parallax-corrected coordinates
-        par_lat = matched_ds.parallax_corrected_lat.values
-        par_lon = matched_ds.parallax_corrected_lon.values
-        rad = np.radians
-        coords = np.column_stack([rad(par_lat), rad(par_lon)])
+    # --- nearest-in-space distance & index (for total_v1 only; unchanged)
+    dmin_all = np.full(n_li, np.nan)
+    nearest_cpr_idx = np.full(n_li, -1, dtype=int)
+    if valid_li.any() and n_cpr:
+        d_full_valid = (
+            haversine_distances(
+                np.column_stack([np.radians(li_lat[valid_li]), np.radians(li_lon[valid_li])]),
+                np.column_stack([np.radians(c_lat), np.radians(c_lon)])
+            ) * EARTH_RADIUS
+        )
+        nearest_idx_valid = np.argmin(d_full_valid, axis=1)
+        dmin_all[valid_li] = d_full_valid[np.arange(nearest_idx_valid.size), nearest_idx_valid]
+        nearest_cpr_idx[valid_li] = nearest_idx_valid
 
-        # Allocate array for signed distances
-        signed_dists = np.full(par_lat.shape, np.nan)
+    updated_ds = matched_ds.copy()
+    updated_ds["distance_from_nadir"] = xr.DataArray(
+        dmin_all, dims=["groups"],
+        attrs={"long_name": "Distance to closest EarthCARE CPR track point", "units": "km"}
+    )
 
-        # Compute only for finite coordinates
-        valid_mask = np.isfinite(coords).all(axis=1)
-        if np.any(valid_mask):
-            coords_valid = coords[valid_mask]
-            nadir_coords = np.column_stack([rad(nadir_lat), rad(nadir_lon)])
+    # --- total_v1 (UNCHANGED semantics: nearest-CPR in space + time to that same CPR)
+    r1 = float(distance_threshold_km)
+    t1 = int(time_threshold_s)
+    c_tim_s  = c_tim.astype("datetime64[s]")
+    li_tim_s = li_tim.astype("datetime64[s]")
 
-            # Compute distances (radians → km)
-            dists_rad = haversine_distances(coords_valid, nadir_coords)
-            dists_km = dists_rad * EARTH_RADIUS
-
-            # Determine sign based on longitude difference
-            nearest_idx = np.argmin(dists_km, axis=1)
-            nearest_lon = nadir_lon[nearest_idx]
-            signs = np.sign(par_lon[valid_mask] - nearest_lon)
-            signed_dists[valid_mask] = signs * dists_km.min(axis=1)
-
-        # Assign distances into dataset
-        updated_ds = matched_ds.copy()
-        updated_ds['distance_from_nadir'] = xr.DataArray(
-            signed_dists,
-            dims=['groups'],
-            attrs={
-                'long_name': 'Signed cross-track distance to EarthCARE CPR track',
-                'units': 'km',
-                'description': 'Positive = east/right of track, Negative = west/left of track'
-            }
+    dt_to_nearest = np.full(n_li, np.nan)
+    has_nearest = nearest_cpr_idx >= 0
+    if has_nearest.any():
+        dt_to_nearest[has_nearest] = np.abs(
+            (li_tim_s[has_nearest] - c_tim_s[nearest_cpr_idx[has_nearest]])
+            .astype("timedelta64[s]").astype(np.int64)
         )
 
-        # Count close
-        close_mask = ~np.isnan(signed_dists) & (np.abs(signed_dists) <= distance_threshold_km)
-        count = int(np.sum(close_mask))
-        logger.info(f"Count within {distance_threshold_km}km & {time_threshold_s}s: {count}")
+    v1_mask = valid_li & np.isfinite(dmin_all) & (dmin_all <= r1) & np.isfinite(dt_to_nearest) & (dt_to_nearest <= t1)
+    total_v1 = int(np.count_nonzero(v1_mask))
 
-        return updated_ds, count
+    # --- per-CPR counts using "second snippet" logic (no nearest-CPR dependency)
+    # Precompute radians for LI and CPR coordinates
+    li_coords_rad_all = np.radians(np.column_stack((li_lat, li_lon)))
+    cpr_coords_rad_all = np.radians(np.column_stack((c_lat, c_lon)))
 
-    except Exception as e:
-        logger.error(f"Error computing nadir distances: {e}")
-        raise
+    # Apply validity to LI once
+    li_valid_idx = np.flatnonzero(valid_li)
+    li_coords_rad_valid = li_coords_rad_all[li_valid_idx]
+    li_tim_s_valid = li_tim_s[li_valid_idx]
+    li_clu_valid = li_clu[li_valid_idx]
+
+    # Arrays to fill
+    li_count_loose  = np.zeros(n_cpr, dtype=np.int32)
+    li_count_strict = np.zeros(n_cpr, dtype=np.int32)
+    loose_dicts = np.empty(n_cpr, dtype=object)
+    strict_dicts = np.empty(n_cpr, dtype=object)
+
+    # thresholds
+    r2 = r1 / 2.0
+    t2 = t1 // 2  # strict time = half, to match your long_name and second snippet intent
+
+    # Loop each CPR sample
+    for i in range(n_cpr):
+        if li_valid_idx.size == 0:
+            loose_dicts[i] = {}
+            strict_dicts[i] = {}
+            continue
+
+        # time masks vs this CPR sample
+        dt_sec = np.abs((li_tim_s_valid - c_tim_s[i]).astype("timedelta64[s]").astype(np.int64))
+        time_mask_loose = dt_sec <= t1
+        time_mask_strict = dt_sec <= t2
+
+        # If no candidates, set empty and continue
+        if not time_mask_loose.any() and not time_mask_strict.any():
+            loose_dicts[i] = {}
+            strict_dicts[i] = {}
+            continue
+
+        cpr_coord_rad = cpr_coords_rad_all[i:i+1]  # shape (1,2)
+
+        # LOSE mode: within r1 and t1
+        if time_mask_loose.any():
+            li_coords_loose = li_coords_rad_valid[time_mask_loose]
+            # distances in km
+            dists_km_loose = haversine_distances(cpr_coord_rad, li_coords_loose)[0] * EARTH_RADIUS
+            sel_loose = dists_km_loose <= r1
+            li_count_loose[i] = int(np.count_nonzero(sel_loose))
+
+            # per-cluster dict (skip -1 and non-finite)
+            if sel_loose.any():
+                clusters_l = li_clu_valid[time_mask_loose][sel_loose]
+                clusters_l = clusters_l[(clusters_l != -1) & np.isfinite(clusters_l)].astype(int)
+                if clusters_l.size:
+                    u, c = np.unique(clusters_l, return_counts=True)
+                    loose_dicts[i] = {int(k): int(v) for k, v in zip(u, c)}
+                else:
+                    loose_dicts[i] = {}
+            else:
+                loose_dicts[i] = {}
+        else:
+            loose_dicts[i] = {}
+
+        # STRICT mode: within r2 and t2
+        if time_mask_strict.any():
+            li_coords_strict = li_coords_rad_valid[time_mask_strict]
+            dists_km_strict = haversine_distances(cpr_coord_rad, li_coords_strict)[0] * EARTH_RADIUS
+            sel_strict = dists_km_strict <= r2
+            li_count_strict[i] = int(np.count_nonzero(sel_strict))
+
+            if sel_strict.any():
+                clusters_s = li_clu_valid[time_mask_strict][sel_strict]
+                clusters_s = clusters_s[(clusters_s != -1) & np.isfinite(clusters_s)].astype(int)
+                if clusters_s.size:
+                    u, c = np.unique(clusters_s, return_counts=True)
+                    strict_dicts[i] = {int(k): int(v) for k, v in zip(u, c)}
+                else:
+                    strict_dicts[i] = {}
+            else:
+                strict_dicts[i] = {}
+        else:
+            strict_dicts[i] = {}
+
+    # --- NetCDF-safe JSON for per-cluster dicts
+    loose_json  = np.array([json.dumps(d, separators=(",", ":")) for d in loose_dicts])
+    strict_json = np.array([json.dumps(d, separators=(",", ":")) for d in strict_dicts])
+
+    # --- summary dataset
+    cpr_summary_ds = xr.Dataset(
+        data_vars=dict(
+            latitude=("cpr", c_lat, {"long_name": "CPR nadir latitude", "units": "degrees_north"}),
+            longitude=("cpr", c_lon, {"long_name": "CPR nadir longitude", "units": "degrees_east"}),
+            time=("cpr", c_tim, {"long_name": "CPR observation time"}),
+            li_count_loose=("cpr", li_count_loose, {
+                "long_name": f"LI groups count within ≤{r1} km and ≤{int(t1)} s", "units": "1"}),
+            li_count_strict=("cpr", li_count_strict, {
+                "long_name": f"LI groups count within ≤{r2} km and ≤{int(t2)} s", "units": "1"}),
+            li_count_loose_per_cluster=("cpr", loose_json, {
+                "long_name": "Loose per-cluster counts (JSON: {cluster_id: count})", "content_encoding": "json"}),
+            li_count_strict_per_cluster=("cpr", strict_json, {
+                "long_name": "Strict per-cluster counts (JSON: {cluster_id: count})", "content_encoding": "json"}),
+        )
+    )
+
+    return updated_ds, total_v1, cpr_summary_ds
