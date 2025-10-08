@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 from typing import List, Tuple
-
+import os 
 import numpy as np
 import xarray as xr
 from scipy.spatial import cKDTree
@@ -32,13 +32,29 @@ def merge_li_datasets(directories: List[Path]) -> xr.Dataset:
         raise FileNotFoundError(msg)
 
     datasets = []
+    def to_long_path(path: Path) -> str:
+        p = str(path)
+        if os.name == "nt" and not p.startswith("\\\\?\\"):
+            p = "\\\\?\\" + os.path.abspath(p)
+        return p
+
     for bf in body_files:
+        print(f"Trying to open: {bf}")
         try:
-            with xr.open_dataset(bf) as ds:
+            with xr.open_dataset(to_long_path(bf)) as ds:
                 ds_mem = ds.load()
             datasets.append(ds_mem)
         except Exception as e:
             logger.warning(f"Failed to open BODY file {bf.name}: {e}")
+    # Throws errors when working on windows due to to long file paths (>260 characters)         
+    # for bf in body_files:
+    #     print(f"Trying to open: {bf}")
+    #     try:
+    #         with xr.open_dataset(bf) as ds:
+    #             ds_mem = ds.load()
+    #         datasets.append(ds_mem)
+    #     except Exception as e:
+    #         logger.warning(f"Failed to open BODY file {bf.name}: {e}")
 
     combined = xr.concat(datasets, dim='groups', combine_attrs='drop_conflicts')
     logger.info(f"Merged {len(datasets)} BODY files into one dataset")

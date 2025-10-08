@@ -15,8 +15,8 @@ _COLLECTION_IDS = {
     'lightning_groups':           'EO:EUM:DAT:0782',
 }
 
-_EUMETSAT_KEY = '8DIttfPvgALnFeynnLanLG2mqE8a'
-_EUMETSAT_SECRET = 'UbhcMU58axiplvSgGf8qHFtkWVAa'
+_EUMETSAT_KEY = 'LfI3E05VvcUTd1e5WSIey4fKBJUa'
+_EUMETSAT_SECRET = 'pIH4odTz6hq6ckZM5SAb4Dg29jAa'
 # Read credentials from environment
 #_EUMETSAT_KEY = os.getenv('EUMETSAT_CONSUMER_KEY')
 #_EUMETSAT_SECRET = os.getenv('EUMETSAT_CONSUMER_SECRET')
@@ -72,6 +72,7 @@ def download_li(
             with product.open() as src:
                 zip_path = output_dir / src.name
                 extract_dir = zip_path.with_suffix('')
+                print("DEBUG extract_dir:", extract_dir)
 
                 # If already extracted (folder exists), reuse it
                 if extract_dir.exists():
@@ -85,15 +86,41 @@ def download_li(
                         shutil.copyfileobj(src, dst)
                     logger.info(f"Downloaded {zip_path.name}")
 
-                # Extract and remove archive
+                # Ensure Windows uses long path syntax
+                def to_long_path(path: Path) -> str:
+                    """Return Windows long-path form if on Windows, else normal path."""
+                    p = str(path)
+                    if os.name == "nt":  # Windows only
+                        if not p.startswith("\\\\?\\"):
+                            p = "\\\\?\\" + os.path.abspath(p)
+                    return p
+
                 try:
-                    with zipfile.ZipFile(zip_path, 'r') as zf:
-                        zf.extractall(path=extract_dir)
+                    with zipfile.ZipFile(str(zip_path), 'r') as zf:
+                        for member in zf.namelist():
+                            target = extract_dir / member
+                            target.parent.mkdir(parents=True, exist_ok=True)
+
+                            # Open inside-zip file and write to disk with long-path support
+                            with zf.open(member) as source, open(to_long_path(target), "wb") as dst:
+                                shutil.copyfileobj(source, dst)
+
                     zip_path.unlink()
                     logger.info(f"Extracted and removed {zip_path.name}")
                     target_dirs.append(extract_dir)
                 except Exception as e:
                     logger.error(f"Failed to extract {zip_path.name}: {e}")
+
+
+                # Extract and remove archive
+        #         try:
+        #             with zipfile.ZipFile(zip_path, 'r') as zf:
+        #                 zf.extractall(path=extract_dir)
+        #             zip_path.unlink()
+        #             logger.info(f"Extracted and removed {zip_path.name}")
+        #             target_dirs.append(extract_dir)
+        #         except Exception as e:
+        #             logger.error(f"Failed to extract {zip_path.name}: {e}")
         except Exception as e:
             logger.error(f"Error handling product {product}: {e}")
 
