@@ -123,6 +123,7 @@ def run_pipeline(
     current_date = start_date
     while current_date <= end_date:
         logger.info(f"Processing date: {current_date:%Y-%m-%d}")
+        # NEW: find EC file pairs remotely via STAC, not local files
         try:
             pairs = find_ec_file_pairs2(
                 products=products,
@@ -130,6 +131,7 @@ def run_pipeline(
                 start_date=current_date,
                 end_date=current_date
             )
+        # NEW: Deal wihh potential STAC query errors
         except Exception as e:
             logger.error(f"STAC query failed for {current_date:%Y-%m-%d}: {e}")
             current_date += timedelta(days=1)
@@ -143,13 +145,12 @@ def run_pipeline(
         for orbit_frame, file_map in pairs.items():
             logger.info(f"Processing orbit frame: {orbit_frame}")
 
-            # These are now remote URLs (strings)
+            # NEW: These are now remote URLs (strings)
             msi_url = file_map[products[0]]
             cpr_url = file_map[products[1]]
 
-            # Pass URLs directly into prepare_ec(), etc.
+            # NEW: URLs directly into prepare_ec2()
             lon, lat, cth, ec_times = prepare_ec2(msi_url)
-            # TODO: now we need to update prepare_ec to actually load the dataset, for this we need to pass the token
 
             within, li_start, li_end = is_within_li_range(
                 lon, ec_times, lon_min, lon_max, integration_minutes
@@ -165,8 +166,9 @@ def run_pipeline(
                 logger.info(f"{orbit_frame}: no Lightning data found")
                 continue
             
+            # NEW: Changed merge_li_datasets to deal with long windows filepaths (double check if true / this version contains it)
             merged_li = merge_li_datasets(li_paths)
-            # Here we have to deal with long filepaths since we are windows and this was originally written for linux
+            
             if merged_li is None:
                 logger.info(f"{orbit_frame}: no usable Lightning BODY files to merge; skipping")
                 continue
@@ -191,8 +193,7 @@ def run_pipeline(
                 logger.info(f"{orbit_frame}: no LI clusters found, skipping")
                 continue
 
-            # Now this deals with EarthCARE stuff again   
-            # TODO: CHeck if matched_times is still needed       
+            # NEW: matched_times replaced by underscore as not needed   
             matched_ds, _ = match_li_to_ec(
                 clustered_li_ds, cth, ec_times,
                 shifted_lat, shifted_lon,
@@ -203,8 +204,7 @@ def run_pipeline(
                 logger.info(f"{orbit_frame}: no lightning matches found")
                 continue
 
-            # TODO: Now we have work with the cpr_url and load the dataset?
-
+            # NEW: Build CPR summary is now updated to deal with cpr_url (string) instead of local file
             final_li_ds, close_count, track_ds = build_cpr_summary2(
                 matched_ds, cpr_url,
                 distance_threshold_km=distance_threshold_km,
