@@ -5,6 +5,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 from trollsift import parse
+from collections import defaultdict
 
 # Pattern to parse EarthCARE filenames. Adjust fields and widths as needed.
 _EC_FILENAME_PATTERN = (
@@ -85,6 +86,53 @@ def find_ec_file_pairs(
             logger.debug(f"Skipping incomplete set {of_key}: found {list(file_map.keys())}")
 
     return valid
+
+from .api_utils import query_catalogue, parse_orbit_frame_from_id
+def find_ec_file_pairs2(
+    products: List[str],
+    frames: List[str],
+    start_date,
+    end_date,
+    collection_id="EarthCAREL2Validated_MAAP",
+    catalog_url="https://catalog.maap.eo.esa.int/catalogue/",
+    asset_key="enclosure_1",
+):
+    """
+    Build a dict mapping orbit_frame → { product_name: remote_asset_url }.
+    Only includes orbits where all requested products are available.
+    """
+    items = query_catalogue(products, frames, start_date, end_date,
+                            collection_id=collection_id,
+                            catalog_url=catalog_url)
+
+    tmp = defaultdict(dict)
+    for item in items:
+        orbit, frame = parse_orbit_frame_from_id(item.id)
+        if not orbit or frame not in [f.upper() for f in frames]:
+            continue
+
+        orbit_frame = f"{orbit}{frame}"
+
+        # Identify which product type this item corresponds to
+        matched_product = next((p for p in products if p in item.id), None)
+        if not matched_product:
+            continue
+
+        # Pick the correct asset href
+        asset = item.assets.get(asset_key) or next(iter(item.assets.values()), None)
+        if not asset:
+            continue
+
+        tmp[orbit_frame][matched_product] = asset.href
+
+    # Only keep entries where all requested products were found
+    result = {
+        k: v for k, v in tmp.items()
+        if set(v.keys()) == set(products)
+    }
+
+    logger.info(f"Found {len(result)} complete orbit/frame pairs")
+    return result
 
 
 def is_within_li_range(

@@ -1,11 +1,6 @@
 import logging
 from pathlib import Path
-<<<<<<< HEAD
-from typing import List, Tuple
-import os 
-=======
-from typing import Tuple
->>>>>>> 0e6b0da6f811c17875ab746ea44a876c1980aacf
+from typing import Tuple 
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -18,91 +13,6 @@ import json
 logger = logging.getLogger(__name__)
 
 
-<<<<<<< HEAD
-def merge_li_datasets(directories: List[Path]) -> xr.Dataset:
-    """
-    Combine multiple extracted LI directories into a single xarray Dataset of BODY files.
-
-    Args:
-        directories: List of Paths to folders containing LI BODY files.
-
-    Returns:
-        A concatenated xarray.Dataset along 'groups' dimension.
-    """
-    body_files = []
-    for folder in directories:
-        if folder.is_dir():
-            body_files.extend(folder.glob("*BODY*"))
-    if not body_files:
-        msg = "No BODY files found in provided LI directories"
-        logger.error(msg)
-        raise FileNotFoundError(msg)
-
-    datasets = []
-    def to_long_path(path: Path) -> str:
-        p = str(path)
-        if os.name == "nt" and not p.startswith("\\\\?\\"):
-            p = "\\\\?\\" + os.path.abspath(p)
-        return p
-
-    for bf in body_files:
-        print(f"Trying to open: {bf}")
-        try:
-            with xr.open_dataset(to_long_path(bf)) as ds:
-                ds_mem = ds.load()
-            datasets.append(ds_mem)
-        except Exception as e:
-            logger.warning(f"Failed to open BODY file {bf.name}: {e}")
-    # Throws errors when working on windows due to to long file paths (>260 characters)         
-    # for bf in body_files:
-    #     print(f"Trying to open: {bf}")
-    #     try:
-    #         with xr.open_dataset(bf) as ds:
-    #             ds_mem = ds.load()
-    #         datasets.append(ds_mem)
-    #     except Exception as e:
-    #         logger.warning(f"Failed to open BODY file {bf.name}: {e}")
-
-    combined = xr.concat(datasets, dim='groups', combine_attrs='drop_conflicts')
-    logger.info(f"Merged {len(datasets)} BODY files into one dataset")
-    return combined
-
-
-def _buffer_li_indices(
-    li_ds: xr.Dataset,
-    shifted_lat: np.ndarray,
-    shifted_lon: np.ndarray,
-) -> np.ndarray:
-    """
-    Identify LI group indices within fixed ±0.5° spatial buffer around EarthCARE.
-    """
-    # Fixed buffers
-    lat_buffer = 0.5
-    lon_buffer = 0.5
-
-    # Compute EarthCARE extents + buffers
-    lat_min = float(np.nanmin(shifted_lat)) - lat_buffer
-    lat_max = float(np.nanmax(shifted_lat)) + lat_buffer
-    lon_min = float(np.nanmin(shifted_lon)) - lon_buffer
-    lon_max = float(np.nanmax(shifted_lon)) + lon_buffer
-
-    # Extract LI arrays
-    li_lat  = li_ds.latitude.values
-    li_lon  = li_ds.longitude.values
-    li_time = li_ds.group_time.values
-
-    # Buffer mask
-    mask = (
-        (li_lat >= lat_min) & (li_lat <= lat_max) &
-        (li_lon >= lon_min) & (li_lon <= lon_max)
-    )
-    indices = np.where(mask)[0]
-    logger.info(f"Buffered LI selects {len(indices)} of {li_lat.size} total groups")
-    return indices
-
-
-=======
->>>>>>> 0e6b0da6f811c17875ab746ea44a876c1980aacf
 def match_li_to_ec(
     li_ds: xr.Dataset,
     cth: np.ndarray,
@@ -213,14 +123,17 @@ def match_li_to_ec(
 
 
 # --- main: build summary; time-window first, then per-CPR helper ---
-def build_cpr_summary(
-    matched_ds: xr.Dataset, cpr_file: Path, distance_threshold_km=5.0, time_threshold_s=300
+from .api_utils import fetch_earthcare_data
+def build_cpr_summary2(
+    matched_ds: xr.Dataset, cpr_url: str, distance_threshold_km=5.0, time_threshold_s=300
 ) -> tuple[xr.Dataset, int, xr.Dataset]:
-    # --- load CPR + LI
-    with xr.open_dataset(cpr_file, group="ScienceData", engine="netcdf4") as cpr:
-        c_lat = np.asarray(cpr["latitude"].values, float)
-        c_lon = np.asarray(cpr["longitude"].values, float)
-        c_tim = np.asarray(pd.to_datetime(cpr["time"].values))
+    # --- load LI
+    # --- load CPR dataset remotely instead of from local file
+    cpr = fetch_earthcare_data(cpr_url, group="ScienceData")
+
+    c_lat = np.asarray(cpr["latitude"].values, float)
+    c_lon = np.asarray(cpr["longitude"].values, float)
+    c_tim = np.asarray(pd.to_datetime(cpr["time"].values))
 
     li_lat = np.asarray(matched_ds["parallax_corrected_lat"].values, float)
     li_lon = np.asarray(matched_ds["parallax_corrected_lon"].values, float)

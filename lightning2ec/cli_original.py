@@ -4,20 +4,25 @@ from pathlib import Path
 import numpy as np
 
 from .download import download_li
-from .preprocess import prepare_ec2, merge_li_datasets, buffer_li
-from .utils import find_ec_file_pairs2, is_within_li_range, configure_logging
+from .preprocess import prepare_ec, merge_li_datasets, buffer_li
+from .utils import find_ec_file_pairs, is_within_li_range, configure_logging
 from .parallax import apply_parallax_shift
 from .clustering import cluster_li_groups
 from .collocation import (
     match_li_to_ec,
-    build_cpr_summary2
+    build_cpr_summary
 )
 from .netcdf_writer import write_li_netcdf, write_track_netcdf
 
 logger = configure_logging()
 
 @click.command()
-#Removed ecbase path 
+@click.option(
+    '--ec-base', 'ec_base_path',
+    type=click.Path(exists=True, file_okay=False),
+    required=True,
+    help="Root directory for EarthCARE HDF5 files"
+)
 @click.option(
     '--lightning-dir', 'li_base_path',
     type=click.Path(file_okay=False),
@@ -108,7 +113,7 @@ logger = configure_logging()
 )
 
 def run_pipeline(
-    li_base_path,
+    ec_base_path, li_base_path,
     start_date, end_date,
     products, frames,
     li_collection,
@@ -118,39 +123,21 @@ def run_pipeline(
     distance_threshold_km, time_threshold_s
 ):
     """Run the EarthCARE + Lightning collocation pipeline over a date range."""
+    ec_base = Path(ec_base_path)
     li_base = Path(li_base_path)
 
     current_date = start_date
     while current_date <= end_date:
         logger.info(f"Processing date: {current_date:%Y-%m-%d}")
-        try:
-            pairs = find_ec_file_pairs2(
-                products=products,
-                frames=frames,
-                start_date=current_date,
-                end_date=current_date
-            )
-        except Exception as e:
-            logger.error(f"STAC query failed for {current_date:%Y-%m-%d}: {e}")
-            current_date += timedelta(days=1)
-            continue
-
-        if not pairs:
-            logger.info(f"No matching EarthCARE orbits found for {current_date:%Y-%m-%d}")
-            current_date += timedelta(days=1)
-            continue
+        date_dir = ec_base / current_date.strftime('%Y%m%d')
+        pairs = find_ec_file_pairs(date_dir, products, frames)
 
         for orbit_frame, file_map in pairs.items():
             logger.info(f"Processing orbit frame: {orbit_frame}")
+            msi_file = date_dir / file_map[products[0]]
+            cpr_file = date_dir / file_map[products[1]]
 
-            # These are now remote URLs (strings)
-            msi_url = file_map[products[0]]
-            cpr_url = file_map[products[1]]
-
-            # Pass URLs directly into prepare_ec(), etc.
-            lon, lat, cth, ec_times = prepare_ec2(msi_url)
-            # TODO: now we need to update prepare_ec to actually load the dataset, for this we need to pass the token
-
+            lon, lat, cth, ec_times = prepare_ec(msi_file)
             within, li_start, li_end = is_within_li_range(
                 lon, ec_times, lon_min, lon_max, integration_minutes
             )
@@ -166,7 +153,6 @@ def run_pipeline(
                 continue
             
             merged_li = merge_li_datasets(li_paths)
-            # Here we have to deal with long filepaths since we are windows and this was originally written for linux
             if merged_li is None:
                 logger.info(f"{orbit_frame}: no usable Lightning BODY files to merge; skipping")
                 continue
@@ -191,9 +177,7 @@ def run_pipeline(
                 logger.info(f"{orbit_frame}: no LI clusters found, skipping")
                 continue
 
-            # Now this deals with EarthCARE stuff again   
-            # TODO: CHeck if matched_times is still needed       
-            matched_ds, _ = match_li_to_ec(
+            matched_ds, matched_times = match_li_to_ec(
                 clustered_li_ds, cth, ec_times,
                 shifted_lat, shifted_lon,
                 satellite_lon, satellite_lat,
@@ -203,10 +187,8 @@ def run_pipeline(
                 logger.info(f"{orbit_frame}: no lightning matches found")
                 continue
 
-            # TODO: Now we have work with the cpr_url and load the dataset?
-
-            final_li_ds, close_count, track_ds = build_cpr_summary2(
-                matched_ds, cpr_url,
+            final_li_ds, close_count, track_ds = build_cpr_summary(
+                matched_ds, cpr_file,
                 distance_threshold_km=distance_threshold_km,
                 time_threshold_s=time_threshold_s
             )

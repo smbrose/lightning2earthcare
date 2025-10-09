@@ -15,19 +15,9 @@ _COLLECTION_IDS = {
     'lightning_groups':           'EO:EUM:DAT:0782',
 }
 
-_EUMETSAT_KEY = 'LfI3E05VvcUTd1e5WSIey4fKBJUa'
-_EUMETSAT_SECRET = 'pIH4odTz6hq6ckZM5SAb4Dg29jAa'
-# Read credentials from environment
-#_EUMETSAT_KEY = os.getenv('EUMETSAT_CONSUMER_KEY')
-#_EUMETSAT_SECRET = os.getenv('EUMETSAT_CONSUMER_SECRET')
+from .token_handling import get_eumetsat_token
 
-#if not (_EUMETSAT_KEY and _EUMETSAT_SECRET):
-#    logger.error("EUMETSAT_CONSUMER_KEY and/or EUMETSAT_CONSUMER_SECRET not set in environment")
-#    raise RuntimeError("Missing EUMETSAT API credentials")
-
-# Initialize access token and datastore
-_TOKEN = eumdac.AccessToken((_EUMETSAT_KEY, _EUMETSAT_SECRET))
-_DATASTORE = eumdac.DataStore(_TOKEN)
+_TOKEN, _DATASTORE = get_eumetsat_token()
 
 def download_li(
     start_time,

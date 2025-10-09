@@ -7,6 +7,8 @@ import glob
 from scipy.interpolate import griddata
 from shapely.geometry import Polygon
 from shapely import vectorized
+import os
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -78,41 +80,87 @@ def prepare_ec(cop_file: Path
 
     return lon_clipped, lat_clipped, cth_filled, times
 
+from .api_utils import fetch_earthcare_data
+def prepare_ec2(msi_url):
+    """
+    Prepare EarthCARE MSI data for processing.
 
-def merge_li_datasets(li_paths: list[Path]) -> xr.Dataset | None:
+    Opens the MSI dataset (locally or via HTTPS STAC asset),
+    extracts key fields, and returns them as numpy arrays.
+    """
+    logger.info(f"Fetching MSI dataset from {msi_url}")
+
+    msi_ds = fetch_earthcare_data(msi_url)
+
+    required_vars = ["longitude", "latitude", "cloud_top_height", "time"]
+    for var in required_vars:
+        if var not in msi_ds:
+            raise KeyError(f"Missing expected variable '{var}' in MSI dataset")
+
+    lon = msi_ds["longitude"].values
+    lat = msi_ds["latitude"].values
+    cth = msi_ds["cloud_top_height"].values
+    ec_times = msi_ds["time"].values
+
+    logger.info(
+        f"Loaded MSI dataset: lon({lon.shape}), lat({lat.shape}), "
+        f"cth({cth.shape}), time({len(ec_times)})"
+    )
+    return lon, lat, cth, ec_times
+
+
+def merge_li_datasets(directories: List[Path]) -> xr.Dataset:
     """
     Combine multiple extracted LI directories into a single xarray Dataset of BODY files.
 
     Args:
-        li_paths: List of Paths to folders containing LI BODY files.
+        directories: List of Paths to folders containing LI BODY files.
 
     Returns:
         A concatenated xarray.Dataset along 'groups' dimension.
     """
+    body_files = []
+    for folder in directories:
+        if folder.is_dir():
+            body_files.extend(folder.glob("*BODY*"))
+    if not body_files:
+        msg = "No BODY files found in provided LI directories"
+        logger.error(msg)
+        raise FileNotFoundError(msg)
+
     datasets = []
-    n_found = 0
-    n_ok = 0
-    for p in li_paths:
-        for nc in sorted(glob.glob(str(p / "*BODY*.nc"))):
-            n_found += 1
-            try:
-                ds = xr.open_dataset(nc, engine="netcdf4")
-                datasets.append(ds)
-                n_ok += 1
-            except Exception as e:
-                logger.warning(f"Failed to open BODY file {nc}: {e}")
+
+    def to_long_path(path: Path) -> str:
+        """
+        Convert a Path object to a long path string for Windows compatibility.
+        """
+        p = str(path)
+        if os.name == "nt" and not p.startswith("\\\\?\\"):
+            p = "\\\\?\\" + os.path.abspath(p)
+        return p
+
+    for bf in body_files:
+        logger.info(f"Trying to open BODY file: {bf}")
+        try:
+            # Open the dataset with long path support
+            with xr.open_dataset(to_long_path(bf)) as ds:
+                ds_mem = ds.load()  # Load into memory to avoid lazy loading issues
+            datasets.append(ds_mem)
+        except Exception as e:
+            logger.warning(f"Failed to open BODY file {bf}: {e}")
 
     if not datasets:
-        logger.info(f"merge_li_datasets: 0/{n_found} BODY files opened successfully; returning None.")
+        logger.error("No BODY files could be opened successfully.")
         return None
 
-    logger.info(f"merge_li_datasets: opened {n_ok}/{n_found} BODY files; concatenating.")
+    # Concatenate all datasets along the 'groups' dimension
     try:
-        combined = xr.concat(datasets, dim="groups", combine_attrs="drop_conflicts")
-    finally:
-        for ds in datasets:
-            ds.close()
-    return combined
+        combined_ds = xr.concat(datasets, dim="groups")
+        logger.info(f"Successfully merged {len(datasets)} BODY files into a single dataset.")
+        return combined_ds
+    except Exception as e:
+        logger.error(f"Failed to concatenate BODY files: {e}")
+        return None
 
 
 def buffer_li(
