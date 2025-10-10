@@ -42,6 +42,7 @@ def query_catalogue(
     search = client.search(
         collections=[collection_id],
         datetime=datetime_str,
+        bbox = [-60, -60, 60, 60],  
         filter=combined_filter,
         method="GET",
     )
