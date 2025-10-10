@@ -4,6 +4,19 @@
 
 ---
 
+## Getting Started
+
+Build environment file:
+
+```bash
+conda env create -f environment.yaml
+```
+To activate the environment after creation, use: 
+
+```bash
+conda activate Lightning2ec
+```
+
 ## Usage
 
 Example command:
