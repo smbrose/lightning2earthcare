@@ -113,7 +113,7 @@ def write_li_netcdf(
             "time_coverage_end": time_max + "Z"
         })
 
-        ds.to_netcdf(path=str(output_path))
+        ds.to_netcdf(path=str(output_path), engine="h5netcdf")
         logger.info(f"Saved NetCDF to {output_path}")
     except Exception as e:
         logger.error(f"Failed to save NetCDF {output_path}: {e}")
@@ -143,7 +143,7 @@ def write_track_netcdf(
             "history": f"Created on {date_str}",
             "source": "EUMETSAT MTG-LI L2 + EarthCARE CPR",
         })
-        ds.to_netcdf(path=str(output_path))
+        ds.to_netcdf(path=str(output_path), engine="h5netcdf")
         logger.info(f"Saved CPR summary NetCDF to {output_path}")
     except Exception as e:
         logger.error(f"Failed to save CPR NetCDF {output_path}: {e}")

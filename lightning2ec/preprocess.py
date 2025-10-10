@@ -109,41 +109,23 @@ def prepare_ec2(msi_url):
     return lon, lat, cth, ec_times
 
 
-def merge_li_datasets(directories: List[Path]) -> xr.Dataset:
+def merge_li_datasets(nc_files: List[Path]) -> xr.Dataset:
     """
-    Combine multiple extracted LI directories into a single xarray Dataset of BODY files.
+    Combine multiple LI netcdf "BODY" files into a single xarray Dataset.
 
     Args:
-        directories: List of Paths to folders containing LI BODY files.
+        nc_files: List of Paths to LI BODY files.
 
     Returns:
         A concatenated xarray.Dataset along 'groups' dimension.
     """
-    body_files = []
-    for folder in directories:
-        if folder.is_dir():
-            body_files.extend(folder.glob("*BODY*"))
-    if not body_files:
-        msg = "No BODY files found in provided LI directories"
-        logger.error(msg)
-        raise FileNotFoundError(msg)
 
     datasets = []
 
-    def to_long_path(path: Path) -> str:
-        """
-        Convert a Path object to a long path string for Windows compatibility.
-        """
-        p = str(path)
-        if os.name == "nt" and not p.startswith("\\\\?\\"):
-            p = "\\\\?\\" + os.path.abspath(p)
-        return p
-
-    for bf in body_files:
+    for bf in nc_files:
         logger.info(f"Trying to open BODY file: {bf}")
         try:
-            # Open the dataset with long path support
-            with xr.open_dataset(to_long_path(bf)) as ds:
+            with xr.open_dataset(bf, engine='h5netcdf') as ds:
                 ds_mem = ds.load()  # Load into memory to avoid lazy loading issues
             datasets.append(ds_mem)
         except Exception as e:

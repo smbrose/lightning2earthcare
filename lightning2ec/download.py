@@ -1,12 +1,12 @@
 import os
 import logging
 import shutil
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 import numpy as np
 import eumdac
+from fnmatch import fnmatch
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +26,16 @@ def download_li(
     output_dir: Path
 ) -> list[Path]:
     """
-    Download and unzip Lightning data from EUMETSAT Data Store.
+    Download Lightning data from EUMETSAT Data Store.
 
     Args:
         start_time: numpy.datetime64 or datetime start of range
         end_time:   numpy.datetime64 or datetime end of range
         collection_name: key in _COLLECTION_IDS
-        output_dir: base Path to save downloads and extracted folders
+        output_dir: base Path to save downloads
 
     Returns:
-        List of Paths to extracted directories containing LI files.
+        List of Paths to LI files.
     """
     if collection_name not in _COLLECTION_IDS:
         msg = f"Collection '{collection_name}' is not defined."
@@ -58,61 +58,31 @@ def download_li(
     target_dirs: List[Path] = []
 
     for product in products:
-        try:
-            with product.open() as src:
-                zip_path = output_dir / src.name
-                extract_dir = zip_path.with_suffix('')
-                print("DEBUG extract_dir:", extract_dir)
+        entries = list(product.entries)
+        matches = [e for e in entries if fnmatch(e, "*BODY*.nc")]
+        if not matches:
+            logger.warning(f"No *BODY*.nc entry found for {product.id}")
+            continue
 
-                # If already extracted (folder exists), reuse it
-                if extract_dir.exists():
-                    logger.info(f"Data already extracted in {extract_dir}, skipping")
-                    target_dirs.append(extract_dir)
-                    continue
+        for entry in matches:
+            try:
+                with product.open(entry=entry) as src:
+                    nc_path = output_dir / src.name
 
-                # Download zip archive if missing
-                if not zip_path.exists():
-                    with zip_path.open('wb') as dst:
+                    # If data already exist locally, reuse it
+                    if nc_path.exists():
+                        logger.info(f"Data already exist, skipping: {nc_path.name}")
+                        target_dirs.append(nc_path)
+                        continue
+
+                    # Download data if missing
+                    with nc_path.open('wb') as dst:
                         shutil.copyfileobj(src, dst)
-                    logger.info(f"Downloaded {zip_path.name}")
+                    logger.info(f"Downloaded {nc_path.name}")
+                    target_dirs.append(nc_path)
 
-                # Ensure Windows uses long path syntax
-                def to_long_path(path: Path) -> str:
-                    """Return Windows long-path form if on Windows, else normal path."""
-                    p = str(path)
-                    if os.name == "nt":  # Windows only
-                        if not p.startswith("\\\\?\\"):
-                            p = "\\\\?\\" + os.path.abspath(p)
-                    return p
-
-                try:
-                    with zipfile.ZipFile(str(zip_path), 'r') as zf:
-                        for member in zf.namelist():
-                            target = extract_dir / member
-                            target.parent.mkdir(parents=True, exist_ok=True)
-
-                            # Open inside-zip file and write to disk with long-path support
-                            with zf.open(member) as source, open(to_long_path(target), "wb") as dst:
-                                shutil.copyfileobj(source, dst)
-
-                    zip_path.unlink()
-                    logger.info(f"Extracted and removed {zip_path.name}")
-                    target_dirs.append(extract_dir)
-                except Exception as e:
-                    logger.error(f"Failed to extract {zip_path.name}: {e}")
-
-
-                # Extract and remove archive
-        #         try:
-        #             with zipfile.ZipFile(zip_path, 'r') as zf:
-        #                 zf.extractall(path=extract_dir)
-        #             zip_path.unlink()
-        #             logger.info(f"Extracted and removed {zip_path.name}")
-        #             target_dirs.append(extract_dir)
-        #         except Exception as e:
-        #             logger.error(f"Failed to extract {zip_path.name}: {e}")
-        except Exception as e:
-            logger.error(f"Error handling product {product}: {e}")
+            except Exception as e:
+                logger.error(f"Error handling product {product.id} / entry {entry}: {e}")
 
     return target_dirs
 
