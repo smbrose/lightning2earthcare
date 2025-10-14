@@ -135,40 +135,115 @@ def find_ec_file_pairs2(
     return result
 
 
-def is_within_li_range(
+# GLM-East platform handover date (EAST: GOES-16 -> GOES-19)
+_GLM_EAST_SWITCH_DATE = np.datetime64('2025-04-07')
+
+def _normalize_lon_to_180(lon: np.ndarray) -> np.ndarray:
+    """
+    Normalize longitudes to [-180, 180] range. Works with 1D/2D arrays.
+    """
+    lon = np.asarray(lon, dtype=float)
+    return ((lon + 180.0) % 360.0) - 180.0
+
+def _any_overlap_lon(ec_lon_norm: np.ndarray, intervals) -> bool:
+    """
+    Return True if any EC longitude falls within any of the [lo, hi] intervals.
+    `intervals` is an iterable of (lo, hi) in degrees, with lo<=hi, all in [-180,180].
+    """
+    if ec_lon_norm.size == 0 or np.all(np.isnan(ec_lon_norm)):
+        return False
+    mask = np.zeros_like(ec_lon_norm, dtype=bool)
+    for lo, hi in intervals:
+        mask |= (ec_lon_norm >= lo) & (ec_lon_norm <= hi)
+    return bool(np.any(mask))
+
+def _glm_east_platform(at_time: np.datetime64) -> str:
+    """
+    EAST platform: GOES-16 before 2025-04-07, GOES-19 on/after.
+    """
+    return 'GOES-16' if at_time < _GLM_EAST_SWITCH_DATE else 'GOES-19'
+
+def _ec_time_window(times: np.ndarray, half_window_minutes: int):
+    """
+    Compute [start, end] window around EC times.
+    """
+    start_time = times[0] - np.timedelta64(half_window_minutes, 'm')
+    end_time   = times[-1] + np.timedelta64(half_window_minutes, 'm')
+    return start_time, end_time
+
+def is_within_satellite_range(
     lon: np.ndarray,
     times: np.ndarray,
-    lon_min: float,
-    lon_max: float,
-    integration_minutes: int
-) -> Tuple[bool, np.datetime64, np.datetime64]:
+    integration_minutes: int = 60
+):
     """
-    Determine if EarthCARE swath overlaps the LI longitude range,
-    and compute start/end timestamps for LI download.
+    Decide which lightning providers to query based on EC longitudes and time.
 
-    Args:
-        lon: 2D array of EarthCARE longitudes.
-        times: 1D array of EarthCARE time stamps (numpy.datetime64).
-        lon_min, lon_max: bounds for LI matching.
-        integration_minutes: half-window around EC times.
-
-    Returns:
-        (within_range, start_time, end_time)
+    Returns a list of dicts (may be empty). Each dict has:
+      - source: 'mtg_li' | 'glm_east' | 'glm_west'
+      - platform: 'MTG-I1' | 'GOES-16' | 'GOES-19' | 'GOES-18'
+      - start_time: np.datetime64
+      - end_time: np.datetime64
+      - reason: brief string for logging
     """
-    # Compute download window
-    start_time = times[0] - np.timedelta64(integration_minutes, 'm')
-    end_time   = times[-1] + np.timedelta64(integration_minutes, 'm')
+    selections = []
 
-    if lon.size == 0:
-        logger.warning("Longitude array is empty; treating as not within range.")
-        return False, start_time, end_time
-    
-    lon_min_ec = float(np.nanmin(lon))
-    lon_max_ec = float(np.nanmax(lon))
-    logger.info(f"EarthCARE file longitude boundaries: min: {lon_min_ec}, max: {lon_max_ec}")
-    within = (
-        (lon_min <= lon_min_ec <= lon_max) or
-        (lon_min <= lon_max_ec <= lon_max)
-    )
+    if lon.size == 0 or times.size == 0:
+        logger.warning("Empty lon/times; no lightning providers selected.")
+        return selections
 
-    return within, start_time, end_time
+    ec_lon_norm = _normalize_lon_to_180(lon)
+
+    # For concise logging
+    try:
+        lon_min_ec = float(np.nanmin(ec_lon_norm))
+        lon_max_ec = float(np.nanmax(ec_lon_norm))
+    except Exception:
+        lon_min_ec = lon_max_ec = np.nan
+
+    rep_time = times[len(times)//2]  # midpoint time for platform selection
+    start_time, end_time = _ec_time_window(times, integration_minutes)
+
+    # --- MTG-LI coverage: longitude gate [-60, +60]
+    li_intervals = [(-60.0, 60.0)]
+    if _any_overlap_lon(ec_lon_norm, li_intervals):
+        selections.append({
+            'source': 'li',
+            'platform': 'MTG-I1',
+            'start_time': start_time,
+            'end_time': end_time,
+            'reason': f"EC lon [{lon_min_ec:.1f},{lon_max_ec:.1f}] overlaps LI lon [-60,60]"
+        })
+
+    # --- GLM-East coverage: longitude gate [-130, -20]
+    glm_east_intervals = [(-130.0, -20.0)]
+    if _any_overlap_lon(ec_lon_norm, glm_east_intervals):
+        platform = _glm_east_platform(rep_time)
+        selections.append({
+            'source': 'glm_east',
+            'platform': platform,
+            'start_time': start_time,
+            'end_time': end_time,
+            'reason': (f"EC lon [{lon_min_ec:.1f},{lon_max_ec:.1f}] overlaps GLM-East lon [-130,-20]; "
+                       f"platform {platform}")
+        })
+
+    # --- GLM-West coverage: longitude gate wraps dateline: [-180,-80] ∪ [170,180]
+    glm_west_intervals = [(-180.0, -80.0), (170.0, 180.0)]
+    if _any_overlap_lon(ec_lon_norm, glm_west_intervals):
+        selections.append({
+            'source': 'glm_west',
+            'platform': 'GOES-18',
+            'start_time': start_time,
+            'end_time': end_time,
+            'reason': (f"EC lon [{lon_min_ec:.1f},{lon_max_ec:.1f}] overlaps GLM-West lon [-180,-80]∪[170,180]; "
+                       f"platform GOES-18")
+        })
+
+    if selections:
+        for s in selections:
+            logger.info(f"Selected {s['source']} ({s['platform']}): {s['start_time']} → {s['end_time']} | {s['reason']}")
+    else:
+        logger.info(f"No lightning coverage for EC lon [{lon_min_ec:.1f},{lon_max_ec:.1f}].")
+
+    return selections

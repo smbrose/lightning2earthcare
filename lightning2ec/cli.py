@@ -5,7 +5,7 @@ import numpy as np
 
 from .download import download_li
 from .preprocess import prepare_ec2, merge_li_datasets, buffer_li
-from .utils import find_ec_file_pairs2, is_within_li_range, configure_logging
+from .utils import find_ec_file_pairs2, is_within_satellite_range, configure_logging
 from .parallax import apply_parallax_shift
 from .clustering import cluster_li_groups
 from .collocation import (
@@ -57,18 +57,6 @@ logger = configure_logging()
     help="EUMETSAT DS collection name for Lightning"
 )
 @click.option(
-    '--lon-min',
-    default=-60,
-    show_default=True,
-    help="Minimum longitude for Lightning matching"
-)
-@click.option(
-    '--lon-max',
-    default=60,
-    show_default=True,
-    help="Maximum longitude for Lightning matching"
-)
-@click.option(
     '--integration', 'integration_minutes',
     default=60,
     show_default=True,
@@ -112,7 +100,6 @@ def run_pipeline(
     start_date, end_date,
     products, frames,
     li_collection,
-    lon_min, lon_max,
     integration_minutes,
     satellite_lon, satellite_lat, satellite_alt,
     distance_threshold_km, time_threshold_s
@@ -152,19 +139,30 @@ def run_pipeline(
             # NEW: URLs directly into prepare_ec2()
             lon, lat, cth, ec_times = prepare_ec2(msi_url)
 
-            within, li_start, li_end = is_within_li_range(
-                lon, ec_times, lon_min, lon_max, integration_minutes
-            )
-            if not within:
-                logger.info(f"{orbit_frame}: outside longitude bounds, skipping")
+            selections = is_within_satellite_range(lon, ec_times, integration_minutes)
+            if not selections:
+                logger.info(f"{orbit_frame}: outside all lightning coverages, skipping")
                 continue
 
-            li_paths = download_li(
-                li_start, li_end, li_collection, li_base
-            )
-            if not li_paths:
-                logger.info(f"{orbit_frame}: no Lightning data found")
-                continue
+            for sel in selections:
+                if sel['source'] == 'li':
+                    li_paths = download_li(sel['start_time'], sel['end_time'], li_collection, li_base)
+                    pass
+                elif sel['source'] == 'glm_east':
+                    print("not prepared for GLM east yet")
+                    # download_glm(sel['start_time'], sel['end_time'], sector='EAST', platform=sel['platform'], base=li_base)
+                    pass
+                elif sel['source'] == 'glm_west':
+                    print("not prepared for GLM west yet")
+                    # download_glm(sel['start_time'], sel['end_time'], sector='WEST', platform=sel['platform'], base=li_base)
+                    pass
+            
+            # li_paths = download_li(
+            #     li_start, li_end, li_collection, li_base
+            # )
+            # if not li_paths:
+            #     logger.info(f"{orbit_frame}: no Lightning data found")
+            #     continue
             
             # NEW: Changed merge_li_datasets to deal with long windows filepaths (double check if true / this version contains it)
             merged_li = merge_li_datasets(li_paths)
