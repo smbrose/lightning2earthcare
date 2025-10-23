@@ -1,6 +1,6 @@
 # lightning2earthcare
 
-`lightning2earthcare` is a pipeline to collocate **EarthCARE MSI/CPR** data with **Lightning Imager** observations over a date range. The pipeline now supports fetching EarthCARE data directly from the remote ESA MAAP STAC endpoint instead of a local directory
+`lightning2earthcare` is a pipeline to collocate **EarthCARE MSI/CPR** data with **MTG/GOES Lightning observations** over a date range. The pipeline now supports fetching EarthCARE data directly from the remote ESA MAAP STAC endpoint instead of a local directory
 
 ---
 
@@ -25,9 +25,11 @@ Example command:
 python -m lightning2ec.cli \
     --lightning-dir "PATH_TO_YOUR_LIGHTNING_DATA" \
     --start-date 2025-08-22 \
-    --end-date 2025-08-22
+    --end-date 2025-08-22 \
+    --lightning-platform MTG-I1
 
 ```
+By default, the pipeline processes both MTG and GOES lightning data, so specifying `--lightning-platform` is optional.
 
 ## Credentials
 
