@@ -63,22 +63,12 @@ logger = configure_logging()
     help="Half-window of LI integration in minutes"
 )
 @click.option(
-    '--sat-lon', 'satellite_lon',
-    default=0,
+    '--lightning-platform', 'lightning_platforms',
+    multiple=True,
+    type=click.Choice(['MTG-I1', 'GOES-16', 'GOES-18', 'GOES-19']),
+    default=['MTG-I1', 'GOES-16', 'GOES-18', 'GOES-19'],
     show_default=True,
-    help="Satellite longitude"
-)
-@click.option(
-    '--sat-lat', 'satellite_lat',
-    default=0,
-    show_default=True,
-    help="Satellite latitude"
-)
-@click.option(
-    '--sat-alt', 'satellite_alt',
-    default=35786400,
-    show_default=True,
-    help="Satellite altitude (meters)"
+    help="Lightning platforms to include"
 )
 @click.option(
     '--distance-threshold', 'distance_threshold_km',

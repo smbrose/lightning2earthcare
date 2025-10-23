@@ -138,9 +138,6 @@ def find_ec_file_pairs2(
     return result
 
 
-# GLM-East platform handover date (EAST: GOES-16 -> GOES-19)
-_GLM_EAST_SWITCH_DATE = np.datetime64('2025-04-07')
-
 def _normalize_lon_to_180(lon: np.ndarray) -> np.ndarray:
     """
     Normalize longitudes to [-180, 180] range. Works with 1D/2D arrays.
@@ -164,6 +161,8 @@ def _glm_east_platform(at_time: np.datetime64) -> str:
     """
     EAST platform: GOES-16 before 2025-04-07, GOES-19 on/after.
     """
+    # GLM-East platform handover date (EAST: GOES-16 -> GOES-19)
+    _GLM_EAST_SWITCH_DATE = np.datetime64('2025-04-07')
     return 'GOES-16' if at_time < _GLM_EAST_SWITCH_DATE else 'GOES-19'
 
 def _ec_time_window(times: np.ndarray, half_window_minutes: int):
@@ -177,7 +176,8 @@ def _ec_time_window(times: np.ndarray, half_window_minutes: int):
 def is_within_satellite_range(
     lon: np.ndarray,
     times: np.ndarray,
-    integration_minutes: int = 60
+    integration_minutes: int = 60,
+    allowed_platforms=None,  # e.g. ('MTG-LI','GOES-16') ; None => allow all
 ):
     """
     Decide which lightning providers to query based on EC longitudes and time.
@@ -207,41 +207,70 @@ def is_within_satellite_range(
     rep_time = times[len(times)//2]  # midpoint time for platform selection
     start_time, end_time = _ec_time_window(times, integration_minutes)
 
-    # --- MTG-LI coverage: longitude gate [-60, +60]
-    li_intervals = [(-60.0, 60.0)]
-    if _any_overlap_lon(ec_lon_norm, li_intervals):
-        selections.append({
-            'source': 'li',
+    # Helper to append if platform is allowed
+    def _maybe_add(entry):
+        if allowed_platforms is None:
+            selections.append(entry)
+        else:
+            if entry['platform'] in set(allowed_platforms):
+                selections.append(entry)
+            else:
+                logger.info(
+                    f"Skipping {entry['source']} ({entry['platform']}) due to platform filter {allowed_platforms}"
+                )
+
+    # MTG-LI: lon [-60, 60]
+    if _any_overlap_lon(ec_lon_norm, [(-60.0, 60.0)]):
+        _maybe_add({
+            'source': 'LI',
             'platform': 'MTG-I1',
             'start_time': start_time,
             'end_time': end_time,
             'reason': f"EC lon [{lon_min_ec:.1f},{lon_max_ec:.1f}] overlaps LI lon [-60,60]"
         })
 
-    # --- GLM-East coverage: longitude gate [-130, -20]
-    glm_east_intervals = [(-130.0, -20.0)]
-    if _any_overlap_lon(ec_lon_norm, glm_east_intervals):
-        platform = _glm_east_platform(rep_time)
-        selections.append({
-            'source': 'glm_east',
-            'platform': platform,
-            'start_time': start_time,
-            'end_time': end_time,
-            'reason': (f"EC lon [{lon_min_ec:.1f},{lon_max_ec:.1f}] overlaps GLM-East lon [-130,-20]; "
-                       f"platform {platform}")
-        })
+    # ------- GLM: choose the side with larger EC coverage -------
+    east_ranges = [(-130.0, -20.0)]
+    west_ranges = [(-180.0, -80.0), (170.0, 180.0)]
 
-    # --- GLM-West coverage: longitude gate wraps dateline: [-180,-80] ∪ [170,180]
-    glm_west_intervals = [(-180.0, -80.0), (170.0, 180.0)]
-    if _any_overlap_lon(ec_lon_norm, glm_west_intervals):
-        selections.append({
-            'source': 'glm_west',
-            'platform': 'GOES-18',
-            'start_time': start_time,
-            'end_time': end_time,
-            'reason': (f"EC lon [{lon_min_ec:.1f},{lon_max_ec:.1f}] overlaps GLM-West lon [-180,-80]∪[170,180]; "
-                       f"platform GOES-18")
-        })
+    valid = np.isfinite(ec_lon_norm)
+    # Fraction of EC points within each coverage
+    def _in_ranges(arr, ranges):
+        m = np.zeros(arr.shape, dtype=bool)
+        for lo, hi in ranges:
+            m |= (arr >= lo) & (arr <= hi)
+        return m
+
+    mask_east = valid & _in_ranges(ec_lon_norm, east_ranges)
+    mask_west = valid & _in_ranges(ec_lon_norm, west_ranges)
+
+    denom = float(valid.sum())  # only count valid points
+    frac_east = float(mask_east.sum()) / denom
+    frac_west = float(mask_west.sum()) / denom
+
+    # Pick only the larger (ties → prefer East)
+    if frac_east > 0.0 or frac_west > 0.0:
+        if frac_east >= frac_west:
+            # GLM-East: platform switches by date
+            platform = _glm_east_platform(rep_time)  # 'GOES-16' or 'GOES-19'
+            _maybe_add({
+                'source': 'GLM',
+                'platform': platform,
+                'start_time': start_time,
+                'end_time': end_time,
+                'reason': (f"EC lon [{lon_min_ec:.1f},{lon_max_ec:.1f}] overlaps GLM-East lon [-130,-20]; "
+                           f"selected East (coverage {frac_east:.2%}) with platform {platform}")
+            })
+        else:
+            # GLM-West: fixed GOES-18
+            _maybe_add({
+                'source': 'GLM',
+                'platform': 'GOES-18',
+                'start_time': start_time,
+                'end_time': end_time,
+                'reason': (f"EC lon [{lon_min_ec:.1f},{lon_max_ec:.1f}] overlaps GLM-West lon [-180,-80]∪[170,180]; "
+                           f"selected West (coverage {frac_west:.2%}) with platform GOES-18")
+            })
 
     if selections:
         for s in selections:
