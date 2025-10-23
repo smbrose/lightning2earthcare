@@ -326,6 +326,7 @@ def build_cpr_summary2(
     c_lat = np.asarray(cpr["latitude"].values, float)
     c_lon = np.asarray(cpr["longitude"].values, float)
     c_tim = np.asarray(pd.to_datetime(cpr["time"].values))
+    c_land = np.asarray(cpr["land_flag"].values, int)
 
     # --- use parallax-corrected coordinates if available, otherwise fall back (for GLM cases)
     if "parallax_corrected_lat" in matched_ds and "parallax_corrected_lon" in matched_ds:
@@ -474,6 +475,8 @@ def build_cpr_summary2(
             latitude=("cpr", c_lat, {"long_name": "CPR nadir latitude", "units": "degrees_north"}),
             longitude=("cpr", c_lon, {"long_name": "CPR nadir longitude", "units": "degrees_east"}),
             time=("cpr", c_tim, {"long_name": "CPR observation time"}),
+            land_flag=("cpr", c_land, {
+                "long_name": "CPR land/water flag", "definition": "1 = land, 0 = not land", "units": "1"}),
             li_count_loose=("cpr", li_count_loose, {
                 "long_name": f"LI groups count within ≤{r1} km and ≤{int(t1)} s", "units": "1"}),
             li_count_strict=("cpr", li_count_strict, {
