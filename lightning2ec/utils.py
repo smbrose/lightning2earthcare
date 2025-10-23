@@ -131,6 +131,9 @@ def find_ec_file_pairs2(
         if set(v.keys()) == set(products)
     }
 
+    # Sort by orbit_frame name
+    result = dict(sorted(result.items(), key=lambda x: x[0]))
+
     logger.info(f"Found {len(result)} complete orbit/frame pairs")
     return result
 
