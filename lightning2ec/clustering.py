@@ -14,65 +14,76 @@ def filter_clusters_by_quality(
 ) -> xr.Dataset:
     """
     Filters out low-quality clusters and groups based on flag variables.
+    Works for MTG-LI and GLM:
+      - GLM: uses 'group_quality_flag' (0 = good)
+      - LI : uses the existing l1b_* warnings (0 = good)
     Drops flag and auxiliary variables after filtering.
-
-    Keeps only groups where:
-    - All flag values are 0
-    - Belong to a cluster that has <= `cluster_bad_threshold` proportion of bad groups
-
-    Parameters
-    ----------
-    ds : xr.Dataset
-        Dataset with 'cluster_id' and flag variables.
-    cluster_bad_threshold : float
-        Threshold above which clusters are considered bad and removed.
-
-    Returns
-    -------
-    xr.Dataset
-        Cleaned dataset with only high-quality groups and clusters.
     """
     cluster_id_var = "cluster_id"
-    flag_vars = [
-        "l1b_missing_warning",
-        "l1b_geolocation_warning",
-        "l1b_radiometric_warning"
+
+    # Candidate flags across products (0 = good)
+    candidate_flags = [
+        "group_quality_flag",          # GLM
+        "l1b_missing_warning",         # LI
+        "l1b_geolocation_warning",     # LI
+        "l1b_radiometric_warning",     # LI
     ]
+    # Only those actually present in the dataset
+    flag_vars = [f for f in candidate_flags if f in ds.variables]
+
     auxiliary_vars = [
         "auxiliary_dataset_identifier",
         "auxiliary_dataset_status",
-        "group_filter_qa"
+        "group_filter_qa",
     ]
 
-    # Create per-group mask
-    quality_mask = np.ones(ds.sizes["groups"], dtype=bool)
-    for flag in flag_vars:
-        quality_mask &= ds[flag].values == 0
+    # If no known flags are present, return unchanged
+    if not flag_vars:
+        logger.info("No known quality flags found; skipping quality filtering.")
+        return ds
 
+    # Per-group quality mask: keep only flag == 0 for all present flags
+    n_groups = ds.sizes.get("groups", None)
+    if n_groups is None:
+        logger.warning("Dataset missing 'groups' dimension; skipping quality filtering.")
+        return ds
+
+    quality_mask = np.ones(n_groups, dtype=bool)
+    for flag in flag_vars:
+        arr = ds[flag]
+        # We only screen group-level flags; non-group dims or scalars are ignored
+        if "groups" in getattr(arr, "dims", ()):
+            quality_mask &= (arr.values == 0)
+
+    # Build per-cluster bad ratio (ignore noise cluster -1)
     cluster_ids = ds[cluster_id_var].values
     df = ds[[cluster_id_var]].to_dataframe().reset_index()
     df["is_bad"] = ~quality_mask
     df = df[df[cluster_id_var] != -1]
 
-    # Evaluate per-cluster bad group ratio
-    bad_rates = df.groupby(cluster_id_var)["is_bad"].mean()
-    bad_clusters = bad_rates[bad_rates > cluster_bad_threshold].index.values
-
-    is_in_bad_cluster = np.isin(cluster_ids, bad_clusters)
-    final_mask = (~is_in_bad_cluster) & quality_mask
-    logger.info(f"Dropped {len(bad_clusters)} of {bad_rates.size} clusters for quality issues.")
+    if not df.empty:
+        bad_rates = df.groupby(cluster_id_var)["is_bad"].mean()
+        bad_clusters = bad_rates[bad_rates > cluster_bad_threshold].index.values
+        is_in_bad_cluster = np.isin(cluster_ids, bad_clusters)
+        final_mask = (~is_in_bad_cluster) & quality_mask
+        logger.info(f"Dropped {len(bad_clusters)} of {bad_rates.size} clusters for quality issues.")
+    else:
+        # No clusters (or all noise) — just use per-group quality
+        final_mask = quality_mask
+        logger.info("No non-noise clusters; applying per-group quality mask only.")
 
     # Subset dataset
     ds = ds.isel(groups=final_mask)
 
-    # Drop flag and auxiliary variables
-    vars_to_drop = [v for v in flag_vars + auxiliary_vars if v in ds.variables]
-    ds = ds.drop_vars(vars_to_drop)
+    # Drop flag and auxiliary variables (include any flags we used)
+    vars_to_drop = [v for v in (flag_vars + auxiliary_vars) if v in ds.variables]
+    if vars_to_drop:
+        ds = ds.drop_vars(vars_to_drop)
 
     return ds
 
 
-def cluster_li_groups(
+def cluster_lightning_groups(
     li_ds: xr.Dataset,
     eps: float = 5.0,
     time_weight: float = 0.5,
