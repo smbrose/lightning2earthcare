@@ -123,7 +123,6 @@ def merge_li_datasets(nc_files: List[Path]) -> xr.Dataset:
     datasets = []
 
     for bf in nc_files:
-        logger.info(f"Trying to open BODY file: {bf}")
         try:
             with xr.open_dataset(bf, engine='h5netcdf') as ds:
                 ds_mem = ds.load()  # Load into memory to avoid lazy loading issues
@@ -145,10 +144,10 @@ def merge_li_datasets(nc_files: List[Path]) -> xr.Dataset:
         return None
 
 
-def buffer_li(
-    li_ds: xr.Dataset,
-    shifted_lat: np.ndarray,
-    shifted_lon: np.ndarray,
+def buffer_lightning_data(
+    l_ds: xr.Dataset,
+    ec_lat: np.ndarray,
+    ec_lon: np.ndarray,
     buffer_deg: float = 0.5,
 ) -> np.ndarray:
     """
@@ -156,10 +155,10 @@ def buffer_li(
 
     Returns indices of li_ds groups whose lat/lon fall inside buffered region.
     """
-    nrows, ncols = shifted_lat.shape
+    nrows, ncols = ec_lat.shape
 
     # Finite in both lat & lon
-    finite = np.isfinite(shifted_lat) & np.isfinite(shifted_lon)
+    finite = np.isfinite(ec_lat) & np.isfinite(ec_lon)
 
     left_edge, right_edge = [], []
     for i in range(nrows):
@@ -167,33 +166,33 @@ def buffer_li(
         if cols.size == 0:
             continue  # this row has only NaNs -> skip
         jL, jR = cols[0], cols[-1]
-        left_edge.append((shifted_lon[i, jL], shifted_lat[i, jL]))
-        right_edge.append((shifted_lon[i, jR], shifted_lat[i, jR]))
+        left_edge.append((ec_lon[i, jL], ec_lat[i, jL]))
+        right_edge.append((ec_lon[i, jR], ec_lat[i, jR]))
 
     ring = left_edge + right_edge[::-1]
 
     outline = Polygon(ring)
     region = outline.buffer(buffer_deg)
 
-    li_lat = li_ds.latitude.values
-    li_lon = li_ds.longitude.values
+    l_lat = l_ds.latitude.values
+    l_lon = l_ds.longitude.values
 
     minx, miny, maxx, maxy = region.bounds
-    in_bbox = (li_lon >= minx) & (li_lon <= maxx) & (li_lat >= miny) & (li_lat <= maxy)
+    in_bbox = (l_lon >= minx) & (l_lon <= maxx) & (l_lat >= miny) & (l_lat <= maxy)
     if not np.any(in_bbox):
         return None
 
     # Only points within bounding box:
-    li_lon_bbox = li_lon[in_bbox]
-    li_lat_bbox = li_lat[in_bbox]
+    l_lon_bbox = l_lon[in_bbox]
+    l_lat_bbox = l_lat[in_bbox]
     indices_bbox = np.where(in_bbox)[0]
 
-    mask_in_poly = vectorized.contains(region, li_lon_bbox, li_lat_bbox)
+    mask_in_poly = vectorized.contains(region, l_lon_bbox, l_lat_bbox)
     indices = indices_bbox[mask_in_poly]
 
     if indices.size == 0:
         return None
     else:
-        logger.info(f"Buffer LI selects {len(indices)} of {li_lat.size} total groups")
-        buffered_ds = li_ds.isel(groups=indices)
+        logger.info(f"Buffer LI selects {len(indices)} of {l_lat.size} total groups")
+        buffered_ds = l_ds.isel(groups=indices)
         return buffered_ds

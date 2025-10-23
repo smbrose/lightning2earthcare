@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def match_li_to_ec(
-    li_ds: xr.Dataset,
+    l_ds: xr.Dataset,
     cth: np.ndarray,
     ec_times: np.ndarray,
     shifted_lat: np.ndarray,
@@ -24,12 +24,12 @@ def match_li_to_ec(
     sat_alt: float,
     time_threshold_s: int = 300,
     radius_deg: float = 0.009
-) -> Tuple[xr.Dataset, np.ndarray]:
+) -> xr.Dataset:
     """
-    Match LI groups to EarthCARE with spatial-temporal proximity.
+    Match MTG-LI lightning groups to EarthCARE with spatial-temporal proximity.
 
     Args:
-        li_ds: xarray Dataset of LI groups (with coordinates latitude, longitude, group_time).
+        l_ds: xarray Dataset of lightning groups (with coordinates latitude, longitude, group_time).
         cth: Cloud top heights (2D) from EarthCARE.
         ec_times: 1D array of EarthCARE time stamps.
         shifted_lat/lon: parallax-corrected coords, same shape as cth.
@@ -38,14 +38,13 @@ def match_li_to_ec(
         radius_deg: spatial matching radius in degrees (~1km).
 
     Returns:
-        matched_ds: subset of li_ds with only matched groups,
-        matched_times: array of group_time stamps for matched groups.
+        l_ds_new: subset of l_ds with only matched groups, plus new variables
     """
     try:
-        # 1) Prepare LI
-        li_lat_buf = li_ds.latitude.values
-        li_lon_buf = li_ds.longitude.values
-        li_time_buf = li_ds.group_time.values
+        # 1) Prepare lightning data
+        l_lat = l_ds.latitude.values
+        l_lon = l_ds.longitude.values
+        l_time = l_ds.group_time.values
 
         # 2) Prepare EC
         ec_coords = np.column_stack([shifted_lat.ravel(), shifted_lon.ravel()])
@@ -55,39 +54,39 @@ def match_li_to_ec(
 
         # 3) Spatial matching
         tree = cKDTree(ec_coords)
-        pts = np.column_stack([li_lat_buf, li_lon_buf])
+        pts = np.column_stack([l_lat, l_lon])
         dists, idxs = tree.query(pts, distance_upper_bound=radius_deg)
         spatial_mask = dists != np.inf
 
         # Initialize output arrays for buffered length
-        n_buf = li_lat_buf.size
+        n_buf = l_lat.size
         par_lat_arr   = np.full(n_buf, np.nan)
         par_lon_arr   = np.full(n_buf, np.nan)
         time_diff_arr = np.full(n_buf, np.timedelta64('NaT'), dtype='timedelta64[ns]')
 
         if not np.any(spatial_mask):
             logger.info("No spatial matches within radius; skipping.")
-            return None, None
+            return None
         else:
             sel_buf = np.where(spatial_mask)[0]
             sel_ec  = idxs[spatial_mask]
 
             # 4) Temporal filtering
-            li_time_sel = li_time_buf[sel_buf]
+            l_time_sel = l_time[sel_buf]
             ec_time_sel = ec_time_exp[sel_ec]
-            td = li_time_sel - ec_time_sel
+            td = l_time_sel - ec_time_sel
             time_mask = np.abs(td) <= np.timedelta64(time_threshold_s, 's')
             sel_buf_final = sel_buf[time_mask]
             sel_ec_final  = sel_ec[time_mask]
 
             if sel_buf_final.size == 0:
                 logger.info("No temporal matches within integration window; skipping.")
-                return None, None
+                return None
             else:
                 logger.info(f"Matched {sel_buf_final.size} LI groups to EarthCARE.")
                 # Parallax correction on matched buffered points
-                lon_pts = li_lon_buf[sel_buf_final]
-                lat_pts = li_lat_buf[sel_buf_final]
+                lon_pts = l_lon[sel_buf_final]
+                lat_pts = l_lat[sel_buf_final]
                 cth_pts = cth_flat[sel_ec_final]
                 par_lon, par_lat = get_parallax_corrected_lonlats(
                     sat_lon, sat_lat, sat_alt,
@@ -98,28 +97,221 @@ def match_li_to_ec(
                 par_lon_arr[sel_buf_final]   = par_lon
                 time_diff_arr[sel_buf_final] = td[time_mask]
 
-        # 5) Attach new variables to buffered_ds
-        li_ds = li_ds.copy()
-        li_ds['parallax_corrected_lat'] = (
-            ('groups',), par_lat_arr,
-            {'long_name':'Parallax corrected latitude','units':'degrees_north'}
-        )
-        li_ds['parallax_corrected_lon'] = (
-            ('groups',), par_lon_arr,
-            {'long_name':'Parallax corrected longitude','units':'degrees_east'}
-        )
-        li_ds['ec_time_diff'] = (
-            ('groups',), time_diff_arr,
-            {'long_name':'Time difference from EarthCARE overpass'}
-        )
+        # Ensure ns-resolution for writing
+        group_time_ns = l_time.astype("datetime64[ns]")
 
-        # Return buffered dataset and matched times
-        matched_times = li_ds.group_time.values[np.where(~np.isnat(time_diff_arr))[0]]
-        return li_ds, matched_times
+        # 5) Construct a clean dataset with new variables
+        l_ds_new = xr.Dataset(
+            data_vars=dict(
+                group_id=(
+                    "groups",
+                    l_ds["group_id"].values.astype("int64"),
+                    {"long_name": "Group ID", "units": "1"},
+                ),
+                group_time=(
+                    "groups",
+                    group_time_ns,
+                    {
+                        "long_name": "Start time of integration frame",
+                        "standard_name": "time",
+                    },
+                ),
+                latitude=(
+                    "groups",
+                    l_ds["latitude"].values.astype("float32"),
+                    {
+                        "long_name": "Latitude of group",
+                        "units": "degrees_north",
+                        "standard_name": "latitude",
+                    },
+                ),
+                longitude=(
+                    "groups",
+                    l_ds["longitude"].values.astype("float32"),
+                    {
+                        "long_name": "Longitude of group",
+                        "units": "degrees_east",
+                        "standard_name": "longitude",
+                    },
+                ),
+                radiance=(
+                    "groups",
+                    l_ds["radiance"].values.astype("float32"),
+                    {
+                        "long_name": "Radiance of group",
+                        "units": "mW.m-2.sr-1",
+                    },
+                ),
+                flash_id=(
+                    "groups",
+                    l_ds["flash_id"].values.astype("int64"),
+                    {"long_name": "Parent flash ID", "units": "1"},
+                ),
+                parallax_corrected_lat=(
+                    "groups",
+                    par_lat_arr.astype("float32"),
+                    {
+                        "long_name": "Parallax corrected latitude",
+                        "units": "degrees_north",
+                    },
+                ),
+                parallax_corrected_lon=(
+                    "groups",
+                    par_lon_arr.astype("float32"),
+                    {
+                        "long_name": "Parallax corrected longitude",
+                        "units": "degrees_east",
+                    },
+                ),
+                ec_time_diff=(
+                    "groups",
+                    time_diff_arr,
+                    {
+                        "long_name": "Time difference from EarthCARE overpass",
+                    },
+                ),
+            )
+        )
+        l_ds_new["cluster_id"] = l_ds["cluster_id"].copy(deep=False)
+
+        return l_ds_new
 
     except Exception as e:
         logger.error(f"Error in match_li_to_ec: {e}")
-        return None, None
+        return None
+
+
+def match_glm_to_ec(
+    l_ds: xr.Dataset,
+    ec_times: np.ndarray,
+    ec_lat: np.ndarray,
+    ec_lon: np.ndarray,
+    time_threshold_s: int = 300,
+    radius_deg: float = 0.009
+) -> xr.Dataset:
+    """
+    Match GOES-GLM lightning groups to EarthCARE with spatial-temporal proximity.
+
+    Args:
+        l_ds: xarray Dataset of lightning groups (with coordinates latitude, longitude, group_time).
+        ec_times: 1D array of EarthCARE time stamps.
+        ec_lat/lon: EarthCARE coords.
+        time_threshold_s: temporal threshold in seconds.
+        radius_deg: spatial matching radius in degrees (~1km).
+
+    Returns:
+        l_ds_new: subset of l_ds with only matched groups, plus new variables
+    """
+    try:
+        # 1) Prepare lightning data
+        l_lat = l_ds.latitude.values
+        l_lon = l_ds.longitude.values
+        l_time = l_ds.group_time.values
+
+        # 2) Prepare EC
+        ec_coords = np.column_stack([ec_lat.ravel(), ec_lon.ravel()])
+        ec_coords = np.nan_to_num(ec_coords, nan=-999)
+        ec_time_exp = np.repeat(ec_times, ec_lat.shape[1])
+
+        # 3) Spatial matching
+        tree = cKDTree(ec_coords)
+        pts = np.column_stack([l_lat, l_lon])
+        dists, idxs = tree.query(pts, distance_upper_bound=radius_deg)
+        spatial_mask = dists != np.inf
+
+        # Initialize output arrays for buffered length
+        n_buf = l_lat.size
+        time_diff_arr = np.full(n_buf, np.timedelta64('NaT'), dtype='timedelta64[ns]')
+
+        if not np.any(spatial_mask):
+            logger.info("No spatial matches within radius; skipping.")
+            return None
+        else:
+            sel_buf = np.where(spatial_mask)[0]
+            sel_ec  = idxs[spatial_mask]
+
+            # 4) Temporal filtering
+            l_time_sel = l_time[sel_buf]
+            ec_time_sel = ec_time_exp[sel_ec]
+            td = l_time_sel - ec_time_sel
+            time_mask = np.abs(td) <= np.timedelta64(time_threshold_s, 's')
+            sel_buf_final = sel_buf[time_mask]
+
+            if sel_buf_final.size == 0:
+                logger.info("No temporal matches within integration window; skipping.")
+                return None
+            else:
+                logger.info(f"Matched {sel_buf_final.size} LI groups to EarthCARE.")
+
+                # Fill arrays
+                time_diff_arr[sel_buf_final] = td[time_mask]
+
+        # Ensure ns-resolution for writing
+        group_time_ns = l_time.astype("datetime64[ns]")
+
+        # 5) Construct a clean dataset with new variables
+        l_ds_new = xr.Dataset(
+            data_vars=dict(
+                group_id=(
+                    "groups",
+                    l_ds["group_id"].values.astype("int64"),
+                    {"long_name": "Group ID", "units": "1"},
+                ),
+                group_time=(
+                    "groups",
+                    group_time_ns,
+                    {
+                        "long_name": "Start time of integration frame",
+                        "standard_name": "time",
+                    },
+                ),
+                latitude=(
+                    "groups",
+                    l_ds["latitude"].values.astype("float32"),
+                    {
+                        "long_name": "Latitude of group",
+                        "units": "degrees_north",
+                        "standard_name": "latitude",
+                    },
+                ),
+                longitude=(
+                    "groups",
+                    l_ds["longitude"].values.astype("float32"),
+                    {
+                        "long_name": "Longitude of group",
+                        "units": "degrees_east",
+                        "standard_name": "longitude",
+                    },
+                ),
+                radiance=(
+                    "groups",
+                    l_ds["radiance"].values.astype("float32"),
+                    {
+                        "long_name": "Radiance of group",
+                        "units": "mW.m-2.sr-1",
+                    },
+                ),
+                flash_id=(
+                    "groups",
+                    l_ds["flash_id"].values.astype("int64"),
+                    {"long_name": "Parent flash ID", "units": "1"},
+                ),
+                ec_time_diff=(
+                    "groups",
+                    time_diff_arr,
+                    {
+                        "long_name": "Time difference from EarthCARE overpass",
+                    },
+                ),
+            )
+        )
+        l_ds_new["cluster_id"] = l_ds["cluster_id"].copy(deep=False)
+
+        return l_ds_new
+
+    except Exception as e:
+        logger.error(f"Error in match_li_to_ec: {e}")
+        return None
 
 
 # --- main: build summary; time-window first, then per-CPR helper ---
@@ -135,13 +327,23 @@ def build_cpr_summary2(
     c_lon = np.asarray(cpr["longitude"].values, float)
     c_tim = np.asarray(pd.to_datetime(cpr["time"].values))
 
-    li_lat = np.asarray(matched_ds["parallax_corrected_lat"].values, float)
-    li_lon = np.asarray(matched_ds["parallax_corrected_lon"].values, float)
+    # --- use parallax-corrected coordinates if available, otherwise fall back (for GLM cases)
+    if "parallax_corrected_lat" in matched_ds and "parallax_corrected_lon" in matched_ds:
+        li_lat = np.asarray(matched_ds["parallax_corrected_lat"].values, float)
+        li_lon = np.asarray(matched_ds["parallax_corrected_lon"].values, float)
+    else:
+        li_lat = np.asarray(matched_ds["latitude"].values, float)
+        li_lon = np.asarray(matched_ds["longitude"].values, float)
     li_tim = np.asarray(pd.to_datetime(matched_ds["group_time"].values))
     li_clu = np.asarray(matched_ds["cluster_id"].values)
 
     n_li, n_cpr = li_lat.size, c_lat.size
-    valid_li = np.isfinite(li_lat) & np.isfinite(li_lon) & ~pd.isna(li_tim)
+    # validity masks
+    valid_geo_time = np.isfinite(li_lat) & np.isfinite(li_lon) & ~pd.isna(li_tim)
+    # exclude noise and non-finite cluster ids globally
+    not_noise = np.isfinite(li_clu) & (li_clu != -1)
+    # use this everywhere
+    valid_li = valid_geo_time & not_noise
 
     # --- nearest-in-space distance & index (for total_v1 only; unchanged)
     dmin_all = np.full(n_li, np.nan)
@@ -231,8 +433,7 @@ def build_cpr_summary2(
 
             # per-cluster dict (skip -1 and non-finite)
             if sel_loose.any():
-                clusters_l = li_clu_valid[time_mask_loose][sel_loose]
-                clusters_l = clusters_l[(clusters_l != -1) & np.isfinite(clusters_l)].astype(int)
+                clusters_l = li_clu_valid[time_mask_loose][sel_loose].astype(int)
                 if clusters_l.size:
                     u, c = np.unique(clusters_l, return_counts=True)
                     loose_dicts[i] = {int(k): int(v) for k, v in zip(u, c)}
@@ -250,9 +451,9 @@ def build_cpr_summary2(
             sel_strict = dists_km_strict <= r2
             li_count_strict[i] = int(np.count_nonzero(sel_strict))
 
+            # per-cluster dict (skip -1 and non-finite)
             if sel_strict.any():
-                clusters_s = li_clu_valid[time_mask_strict][sel_strict]
-                clusters_s = clusters_s[(clusters_s != -1) & np.isfinite(clusters_s)].astype(int)
+                clusters_s = li_clu_valid[time_mask_strict][sel_strict].astype(int)
                 if clusters_s.size:
                     u, c = np.unique(clusters_s, return_counts=True)
                     strict_dicts[i] = {int(k): int(v) for k, v in zip(u, c)}

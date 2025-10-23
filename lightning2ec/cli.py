@@ -1,25 +1,17 @@
 import click
 from datetime import timedelta
 from pathlib import Path
-import numpy as np
 
-from .download import download_li
-from .preprocess import prepare_ec2, merge_li_datasets, buffer_li
+from .lightning_pipeline import process_one_source
+from .preprocess import prepare_ec2
 from .utils import find_ec_file_pairs2, is_within_satellite_range, configure_logging
-from .parallax import apply_parallax_shift
-from .clustering import cluster_li_groups
-from .collocation import (
-    match_li_to_ec,
-    build_cpr_summary2
-)
-from .netcdf_writer import write_li_netcdf, write_track_netcdf
 
 logger = configure_logging()
 
 @click.command()
-#Removed ecbase path 
+
 @click.option(
-    '--lightning-dir', 'li_base_path',
+    '--lightning-dir', 'lightning_base_path',
     type=click.Path(file_okay=False),
     required=True,
     help="Base directory for Lightning downloads and outputs"
@@ -51,12 +43,6 @@ logger = configure_logging()
     help="Orbit frames to include"
 )
 @click.option(
-    '--li-collection',
-    default='lightning_groups',
-    show_default=True,
-    help="EUMETSAT DS collection name for Lightning"
-)
-@click.option(
     '--integration', 'integration_minutes',
     default=60,
     show_default=True,
@@ -86,16 +72,15 @@ logger = configure_logging()
 )
 
 def run_pipeline(
-    li_base_path,
+    lightning_base_path,
     start_date, end_date,
     products, frames,
-    li_collection,
     integration_minutes,
-    satellite_lon, satellite_lat, satellite_alt,
+    lightning_platforms,
     distance_threshold_km, time_threshold_s
 ):
     """Run the EarthCARE + Lightning collocation pipeline over a date range."""
-    li_base = Path(li_base_path)
+    l_base = Path(lightning_base_path)
 
     current_date = start_date
     while current_date <= end_date:
@@ -127,81 +112,30 @@ def run_pipeline(
             cpr_url = file_map[products[1]]
 
             # NEW: URLs directly into prepare_ec2()
-            lon, lat, cth, ec_times = prepare_ec2(msi_url)
+            ec_lon, ec_lat, ec_cth, ec_times = prepare_ec2(msi_url)
 
-            selections = is_within_satellite_range(lon, ec_times, integration_minutes)
+            selections = is_within_satellite_range(ec_lon, ec_times, integration_minutes,
+                                                   allowed_platforms=tuple(lightning_platforms))
             if not selections:
                 logger.info(f"{orbit_frame}: outside all lightning coverages, skipping")
                 continue
 
             for sel in selections:
-                if sel['source'] == 'li':
-                    li_paths = download_li(sel['start_time'], sel['end_time'], li_collection, li_base)
-                    pass
-                elif sel['source'] == 'glm_east':
-                    print("not prepared for GLM east yet")
-                    # download_glm(sel['start_time'], sel['end_time'], sector='EAST', platform=sel['platform'], base=li_base)
-                    pass
-                elif sel['source'] == 'glm_west':
-                    print("not prepared for GLM west yet")
-                    # download_glm(sel['start_time'], sel['end_time'], sector='WEST', platform=sel['platform'], base=li_base)
-                    pass
-            
-            # li_paths = download_li(
-            #     li_start, li_end, li_collection, li_base
-            # )
-            # if not li_paths:
-            #     logger.info(f"{orbit_frame}: no Lightning data found")
-            #     continue
-            
-            # NEW: Changed merge_li_datasets to deal with long windows filepaths (double check if true / this version contains it)
-            merged_li = merge_li_datasets(li_paths)
-            
-            if merged_li is None:
-                logger.info(f"{orbit_frame}: no usable Lightning BODY files to merge; skipping")
-                continue
+                source_key = sel['source']      # 'mtg_li' | 'glm_east' | 'glm_west'
+                platform   = sel['platform']    # 'MTG-I1' | 'GOES-16' | 'GOES-19' | 'GOES-18'
+                t0         = sel['start_time']
+                t1         = sel['end_time']
 
-            shifted_lat, shifted_lon = apply_parallax_shift(
-                lon, lat, cth,
-                satellite_lon, satellite_lat, satellite_alt
-            )
-            # Buffer preselection
-            buf_li_ds = buffer_li(merged_li, shifted_lat, shifted_lon)
-            if buf_li_ds is None:
-                logger.info(f"{orbit_frame}: no LI points in buffer region, skipping")
-                continue
-
-            # Clustering
-            clustered_li_ds = cluster_li_groups(buf_li_ds,
-                                                eps=5.0,
-                                                time_weight=0.5,
-                                                min_samples=20,
-                                                lat_gap=0.25)
-            if clustered_li_ds is None:
-                logger.info(f"{orbit_frame}: no LI clusters found, skipping")
-                continue
-
-            # NEW: matched_times replaced by underscore as not needed   
-            matched_ds, _ = match_li_to_ec(
-                clustered_li_ds, cth, ec_times,
-                shifted_lat, shifted_lon,
-                satellite_lon, satellite_lat,
-                satellite_alt, time_threshold_s=time_threshold_s
-            )
-            if matched_ds is None:
-                logger.info(f"{orbit_frame}: no lightning matches found")
-                continue
-
-            # NEW: Build CPR summary is now updated to deal with cpr_url (string) instead of local file
-            final_li_ds, close_count, track_ds = build_cpr_summary2(
-                matched_ds, cpr_url,
-                distance_threshold_km=distance_threshold_km,
-                time_threshold_s=time_threshold_s
-            )
-
-            write_li_netcdf(final_li_ds, li_base, orbit_frame, close_count)
-            if np.max(track_ds.li_count_loose.values) > 0:
-                write_track_netcdf(track_ds, li_base, orbit_frame, close_count)
+                logger.info(f"{orbit_frame}: processing {source_key} ({platform}) {t0} → {t1}")
+                process_one_source(
+                    source_key, platform, 
+                    t0, t1,
+                    l_base,
+                    orbit_frame,
+                    ec_lon, ec_lat, ec_cth, ec_times,
+                    cpr_url,
+                    distance_threshold_km, time_threshold_s
+                )
 
         current_date += timedelta(days=1)
 
