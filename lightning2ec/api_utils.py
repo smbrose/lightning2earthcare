@@ -48,8 +48,9 @@ def query_catalogue(
     )
 
     items = list(search.items())
+    ba_items = [item for item in items if item.id.startswith("ECA_EXBA")]
     logger.info(f"STAC returned {len(items)} matching items.")
-    return items
+    return ba_items
 
 
 def parse_orbit_frame_from_id(item_id: str):
