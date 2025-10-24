@@ -118,8 +118,19 @@ def find_ec_file_pairs2(
         if not matched_product:
             continue
 
-        # Pick the correct asset href
-        asset = item.assets.get(asset_key) or next(iter(item.assets.values()), None)
+        # Try explicit asset_key first
+        asset = item.assets.get(asset_key)
+        # If not found or not suitable, try enclosure_1 and enclosure_2
+        if not asset or not asset.href.endswith(".h5"):
+            for enc in ["enclosure_1", "enclosure_2"]:
+                cand = item.assets.get(enc)
+                if cand and cand.href.endswith(".h5"):
+                    asset = cand
+                    break
+        # fallback: use first available asset
+        if (not asset) and item.assets:
+            asset = next(iter(item.assets.values()), None)
+
         if not asset:
             continue
 

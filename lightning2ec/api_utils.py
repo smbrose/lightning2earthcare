@@ -34,7 +34,9 @@ def query_catalogue(
     # Build filter: (productType='X' OR productType='Y') AND (frame='A' OR frame='B')
     product_filter = " OR ".join([f"productType = '{p}'" for p in products])
     frame_filter = " OR ".join([f"frame = '{f}'" for f in frames])
-    combined_filter = f"({product_filter}) AND ({frame_filter})"
+    product_version = "ba"
+    baseline_filter = f"productVersion = '{product_version}'"
+    combined_filter = f"({product_filter}) AND ({frame_filter}) AND ({baseline_filter})"
 
     logger.info(f"Querying STAC:\n  products={products}\n  frames={frames}\n  date={datetime_str}")
     logger.debug(f"  Combined filter: {combined_filter}")
@@ -48,9 +50,7 @@ def query_catalogue(
     )
 
     items = list(search.items())
-    ba_items = [item for item in items if item.id.startswith("ECA_EXBA")]
-    logger.info(f"STAC returned {len(items)} matching items.")
-    return ba_items
+    return items
 
 
 def parse_orbit_frame_from_id(item_id: str):
