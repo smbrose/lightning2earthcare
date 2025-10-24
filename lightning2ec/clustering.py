@@ -200,3 +200,82 @@ def cluster_lightning_groups(
     out = filter_clusters_by_quality(out)
 
     return out
+
+
+def subcluster_lightning_groups(
+    matched_ds: xr.Dataset,
+    eps: float = 5.0,
+    time_weight: float = 0.5,
+    min_samples: int = 20,
+) -> xr.Dataset:
+    """
+    Re-cluster matched lightning groups (where ec_time_diff is valid)
+    within each existing cluster_id, using group_time for temporal proximity.
+
+    Adds 'subcluster_id' (float64): NaN = unmatched, -1 = noise.
+    """
+
+    # Extract core variables
+    lat = matched_ds["latitude"].values
+    lon = matched_ds["longitude"].values
+    time = matched_ds["group_time"].values
+    cluster = matched_ds["cluster_id"].values
+    valid = ~np.isnat(matched_ds["ec_time_diff"].values)
+
+    # Initialize with NaN (unmatched)
+    sub_ids = np.full(cluster.shape, np.nan, dtype="float64")
+
+    # Transformer for projected coordinates (distance in km)
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:6933", always_xy=True)
+
+    label_offset = 0
+    for cid in np.unique(cluster):
+        if cid < 0:
+            continue
+
+        # Only consider valid (matched) points in this cluster
+        mask = (cluster == cid) & valid
+        if not np.any(mask):
+            continue
+
+        lat_c = lat[mask]
+        lon_c = lon[mask]
+        t_c = time[mask]
+
+        # Convert group_time to minutes relative to first timestamp
+        t_minutes = ((t_c - t_c.min()).astype("timedelta64[ns]").astype(np.int64)
+                     / (1e9 * 60))
+
+        # Project to km + weighted time
+        x_m, y_m = transformer.transform(lon_c, lat_c)
+        X = np.stack([
+            np.asarray(x_m) / 1000.0,
+            np.asarray(y_m) / 1000.0,
+            t_minutes * time_weight
+        ], axis=1)
+
+        db = DBSCAN(eps=eps, min_samples=min_samples, metric="euclidean")
+        labels = db.fit_predict(X)
+
+        # Make IDs globally unique (optional, but avoids reuse)
+        pos = labels != -1
+        labels = labels.astype("float64")  # ensure float for NaN compatibility
+        if np.any(pos):
+            labels[pos] += label_offset
+            label_offset = labels[pos].max() + 1
+
+        sub_ids[mask] = labels
+
+    # Attach to dataset
+    out = matched_ds.copy()
+    out["subcluster_id"] = xr.DataArray(
+        sub_ids,
+        dims=matched_ds["group_id"].dims,
+        attrs={
+            "long_name": "Subcluster ID within parent clusters",
+            "description": f"DBSCAN clustering (eps={eps}, time_weight={time_weight}, min_samples={min_samples}); -1 = noise",
+            "units": "1",
+        },
+    )
+
+    return out

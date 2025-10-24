@@ -336,7 +336,7 @@ def build_cpr_summary2(
         li_lat = np.asarray(matched_ds["latitude"].values, float)
         li_lon = np.asarray(matched_ds["longitude"].values, float)
     li_tim = np.asarray(pd.to_datetime(matched_ds["group_time"].values))
-    li_clu = np.asarray(matched_ds["cluster_id"].values)
+    li_clu = np.asarray(matched_ds["subcluster_id"].values)
 
     n_li, n_cpr = li_lat.size, c_lat.size
     # validity masks
@@ -478,13 +478,13 @@ def build_cpr_summary2(
             land_flag=("cpr", c_land, {
                 "long_name": "CPR land/water flag", "definition": "1 = land, 0 = not land", "units": "1"}),
             li_count_loose=("cpr", li_count_loose, {
-                "long_name": f"LI groups count within ≤{r1} km and ≤{int(t1)} s", "units": "1"}),
+                "long_name": f"Lightning groups count within ≤{r1} km and ≤{int(t1)} s", "units": "1"}),
             li_count_strict=("cpr", li_count_strict, {
-                "long_name": f"LI groups count within ≤{r2} km and ≤{int(t2)} s", "units": "1"}),
+                "long_name": f"Lightning groups count within ≤{r2} km and ≤{int(t2)} s", "units": "1"}),
             li_count_loose_per_cluster=("cpr", loose_json, {
-                "long_name": "Loose per-cluster counts (JSON: {cluster_id: count})", "content_encoding": "json"}),
+                "long_name": "Loose per-cluster counts (JSON: {subcluster_id: count})", "content_encoding": "json"}),
             li_count_strict_per_cluster=("cpr", strict_json, {
-                "long_name": "Strict per-cluster counts (JSON: {cluster_id: count})", "content_encoding": "json"}),
+                "long_name": "Strict per-cluster counts (JSON: {subcluster_id: count})", "content_encoding": "json"}),
         )
     )
 

@@ -1,7 +1,7 @@
 import numpy as np
 import logging
 from .preprocess import merge_li_datasets, buffer_lightning_data
-from .clustering import cluster_lightning_groups
+from .clustering import cluster_lightning_groups, subcluster_lightning_groups
 from .parallax import apply_parallax_shift
 from .collocation import match_li_to_ec, match_glm_to_ec, build_cpr_summary2
 from .netcdf_writer import write_lightning_netcdf, write_track_netcdf
@@ -87,10 +87,13 @@ def process_one_source(
     if matched_ds is None:
         logger.info(f"[{source_key}] no matches found; skipping.")
         return
+    
+    # NEW: Sub-cluster matched points
+    subclustered = subcluster_lightning_groups(matched_ds, eps=5.0, time_weight=0.5, min_samples=20)
 
     # 6) CPR summary
     final_ds, close_count, track_ds = build_cpr_summary2(
-        matched_ds, cpr_url,
+        subclustered, cpr_url,
         distance_threshold_km=distance_threshold_km,
         time_threshold_s=time_threshold_s
     )
