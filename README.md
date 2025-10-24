@@ -34,7 +34,8 @@ By default, the pipeline processes both MTG and GOES lightning data, so specifyi
 ## Credentials
 
 All API keys and tokens are stored in a `credentials.txt` file located **one directory above** the `lightning2ec` repository.
-Remember: EarthCARE TOKEN is only valid for 12 h and needs to be updated in your file:  https://portal.maap.eo.esa.int/ini/services/auth/token/index.php
+**New**: Use the long-lasting token that can be generated here: https://portal.maap.eo.esa.int/ini/services/auth/token/90dToken.php 
+
 
 ### Creating `credentials.txt`
 
@@ -43,7 +44,9 @@ Remember: EarthCARE TOKEN is only valid for 12 h and needs to be updated in your
 ```
 EUMETSAT_KEY=your_eumetsat_key_here
 EUMETSAT_SECRET=your_eumetsat_secret_here
-EARTHCARE_TOKEN=your_earthcare_api_token_here
+CLIENT_ID=offline-token
+CLIENT_SECRET=p1eL7uonXs6MDxtGbgKdPVRAmnGxHpVE
+OFFLINE_TOKEN=your_earthcare_longlasting_token_here
 ```
 ### Important
 
@@ -53,6 +56,7 @@ EARTHCARE_TOKEN=your_earthcare_api_token_here
 ## Recent Updates
 
 ### Credentials Handling
+- [24/10] Long-lasting token with refresh option replaces the former EARTHCARE_TOKEN 
 - Centralized reading of `EUMETSAT_KEY`, `EUMETSAT_SECRET`, and `EARTHCARE_TOKEN`.  
 - No hardcoded tokens in scripts.  
 - This is all handled in the new `token_handling.py` script.
