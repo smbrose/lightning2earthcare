@@ -9,7 +9,7 @@ from collections import defaultdict
 from typing import List
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+#logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from .token_handling import get_earthcare_token

@@ -9,6 +9,8 @@ import numpy as np
 import xarray as xr
 import eumdac
 from fnmatch import fnmatch
+from concurrent.futures import ThreadPoolExecutor
+import warnings
 
 logger = logging.getLogger(__name__)
 
@@ -123,38 +125,43 @@ def _iter_hours(dt_start: datetime, dt_end: datetime):
     while cur <= end:
         yield cur.year, int(cur.strftime('%j')), cur.hour
         cur += timedelta(hours=1)
-
+    
 
 def load_merge_glm(
     start_time,
     end_time,
     platform: str,
-    product: str = _GLM_PRODUCT
-) -> xr.Dataset:
+    product: str = _GLM_PRODUCT,
+    chunksize: int = 10000, # native chunksize 256, but the performance is better with larger chunks
+    max_workers: int = 8,
+) -> xr.Dataset | None:
     """
     Open GOES GLM L2 (LCFA) NetCDFs directly from NOAA S3 for a time window
-    and return a single merged xarray.Dataset (no local downloads).
+    and return a single merged xarray.Dataset.
     """
+
     try:
         import s3fs
     except ImportError:
         logger.error("s3fs is required to read GLM from NOAA S3. Install with: pip install s3fs")
         return None
 
+    # ---- platform validation ----
     if platform not in _BUCKET_BY_PLATFORM:
         logger.error(f"Unsupported platform {platform!r}. Expected one of {list(_BUCKET_BY_PLATFORM)}")
         return None
 
+    # ---- normalize times ----
     dt_start = _to_datetime(start_time)
     dt_end   = _to_datetime(end_time)
     if dt_end < dt_start:
         logger.warning("load_merge_glm: end_time < start_time; nothing to do.")
         return None
 
+    # ---- S3 listing / key filtering ----
     bucket = _BUCKET_BY_PLATFORM[platform]
     fs = s3fs.S3FileSystem(anon=True)
 
-    # Build candidate prefixes by hour (same as before)
     prefixes = [
         f"{bucket}/{product}/{year:04d}/{jday:03d}/{hour:02d}/"
         for (year, jday, hour) in _iter_hours(dt_start, dt_end)
@@ -163,7 +170,7 @@ def load_merge_glm(
     found_keys = []
     for pref in prefixes:
         try:
-            keys = fs.ls(pref)  # accepts without "s3://"
+            keys = fs.ls(pref)
         except FileNotFoundError:
             continue
         except Exception as e:
@@ -175,8 +182,11 @@ def load_merge_glm(
             m = _GLM_NAME_RE.match(fname)
             if not m:
                 continue
+
             s_dt = _parse_glm_timefield(m.group('s'))
             e_dt = _parse_glm_timefield(m.group('e'))
+
+            # keep only files that overlap requested time window
             if not (e_dt < dt_start or s_dt > dt_end):
                 found_keys.append(key)
 
@@ -185,35 +195,55 @@ def load_merge_glm(
         return None
 
     found_keys = sorted(set(found_keys))
+    urls = [f"s3://{key}" for key in found_keys]
 
-    # Open each file directly from S3 and collect datasets
-    datasets: list[xr.Dataset] = []
-    for key in found_keys:
-        s3url = f"s3://{key}"
-        try:
-            ds = xr.open_dataset(fs.open(s3url, mode='rb'), engine='h5netcdf')
-        except Exception:
-            # fallback to netcdf4 if available
-            ds = xr.open_dataset(fs.open(s3url, mode='rb'), engine='netcdf4')
+    # ---- helper: open+preprocess ONE file ----
+    def _open_and_preprocess_one(url: str) -> xr.Dataset | None:
+        """
+        Open a single GLM file lazily with chunks and apply cleanup + latitude clip.
+        Returns None if nothing remains after clipping.
+        """
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"The specified chunks separate the stored chunks",
+                category=UserWarning,
+                module="xarray.core.dataset"
+            )
 
-        # Normalize GLM dim to 'groups' (GLM uses 'number_of_groups')
+            try:
+                ds = xr.open_dataset(
+                    fs.open(url, mode='rb'),
+                    engine='h5netcdf',
+                    chunks={'number_of_groups': chunksize, 'groups': chunksize}
+                )
+            except Exception:
+                ds = xr.open_dataset(
+                    fs.open(url, mode='rb'),
+                    engine='netcdf4',
+                    chunks={'number_of_groups': chunksize, 'groups': chunksize}
+                )
+
+        # 2. standardize the dimension name
         if 'number_of_groups' in ds.dims:
             ds = ds.rename({'number_of_groups': 'groups'})
 
-        # If there are coordinates along 'groups', turn them into variables
+        # 3. promote coords with 'groups' dim to data vars (so we keep lat/lon/etc as normal vars)
         coord_names = [c for c in ds.coords if 'groups' in getattr(ds[c], 'dims', ())]
         if coord_names:
             ds = ds.reset_coords(names=coord_names, drop=False)
 
-        # Drop everything not along 'groups' (keeps group vars and converted coords)
-        drop_names = [name for name in ds.variables
-                      if 'groups' not in getattr(ds[name], 'dims', ())]
+        # 4. drop variables that are NOT along 'groups'
+        drop_names = [
+            name for name in ds.variables
+            if 'groups' not in getattr(ds[name], 'dims', ())
+        ]
         ds = ds.drop_vars(drop_names, errors='ignore')
 
-        # Drop specific variable
+        # 5. drop specific unwanted vars
         ds = ds.drop_vars(['group_time_offset', 'group_area'], errors='ignore')
 
-        # Rename selected variables if present
+        # 6. rename to nicer variable names
         rename_map = {
             'group_frame_time_offset': 'group_time',
             'group_lat': 'latitude',
@@ -225,12 +255,27 @@ def load_merge_glm(
         if present:
             ds = ds.rename(present)
 
-        datasets.append(ds)
+        return ds
+
+    # ---- open/preprocess all files (parallel, order preserved) ----
+    datasets: list[xr.Dataset] = []
+    def _safe_open(url):
+        try:
+            return _open_and_preprocess_one(url)
+        except Exception as e:
+            logger.error(f"Failed to open/preprocess {url}: {e}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for ds_part in ex.map(_safe_open, urls):
+            if ds_part is not None:
+                datasets.append(ds_part)
 
     if not datasets:
-        logger.error("No GLM datasets could be opened.")
+        logger.error("No GLM datasets had groups after filtering.")
         return None
 
+    # ---- concat using YOUR original concat config ----
     try:
         merged = xr.concat(
             datasets,
@@ -239,12 +284,13 @@ def load_merge_glm(
             coords='minimal',
             join='outer',
             combine_attrs='drop_conflicts',
-            compat='override',   # safe for any remaining per-file metadata
+            compat='override',
         )
+        
         merged = merged.assign_attrs({"platform": platform})
-        merged = merged.load()
         logger.info(f"Merged {len(datasets)} GLM files for platform {platform}")
         return merged
+
     except Exception as e:
         logger.error(f"Failed to concatenate GLM datasets: {e}")
         return None
