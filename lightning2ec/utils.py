@@ -95,7 +95,7 @@ def find_ec_file_pairs2(
     end_date,
     collection_id="EarthCAREL2Validated_MAAP",
     catalog_url="https://catalog.maap.eo.esa.int/catalogue/",
-    asset_key="enclosure_1",
+    asset_key="enclosure_",
 ):
     """
     Build a dict mapping orbit_frame → { product_name: remote_asset_url }.
@@ -118,20 +118,9 @@ def find_ec_file_pairs2(
         if not matched_product:
             continue
 
-        # Try explicit asset_key first
         asset = item.assets.get(asset_key)
-        # If not found or not suitable, try enclosure_1 and enclosure_2
-        if not asset or not asset.href.endswith(".h5"):
-            for enc in ["enclosure_1", "enclosure_2"]:
-                cand = item.assets.get(enc)
-                if cand and cand.href.endswith(".h5"):
-                    asset = cand
-                    break
-        # fallback: use first available asset
-        if (not asset) and item.assets:
-            asset = next(iter(item.assets.values()), None)
 
-        if not asset:
+        if not asset or not asset.href.endswith(".h5"):
             continue
 
         tmp[orbit_frame][matched_product] = asset.href
