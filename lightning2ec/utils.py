@@ -95,7 +95,7 @@ def find_ec_file_pairs2(
     end_date,
     collection_id="EarthCAREL2Validated_MAAP",
     catalog_url="https://catalog.maap.eo.esa.int/catalogue/",
-    asset_key="enclosure_",
+    asset_key="enclosure_h5",
 ):
     """
     Build a dict mapping orbit_frame → { product_name: remote_asset_url }.
