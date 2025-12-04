@@ -1,12 +1,13 @@
 import click
 from datetime import timedelta
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .lightning_pipeline import process_one_source
 from .preprocess import prepare_ec2
-from .utils import find_ec_file_pairs2, is_within_satellite_range, configure_logging
-
-logger = configure_logging()
+from .utils import find_ec_file_pairs2, is_within_satellite_range, configure_logging, set_monthly_log_file, set_log_day
 
 @click.command()
 
@@ -15,6 +16,13 @@ logger = configure_logging()
     type=click.Path(file_okay=False),
     required=True,
     help="Base directory for Lightning downloads and outputs"
+)
+@click.option(
+    '--log-dir',
+    type=click.Path(file_okay=False),
+    default='logs',
+    show_default=True,
+    help="Directory where monthly logs are written"
 )
 @click.option(
     '--start-date',
@@ -73,6 +81,7 @@ logger = configure_logging()
 
 def run_pipeline(
     lightning_base_path,
+    log_dir,
     start_date, end_date,
     products, frames,
     integration_minutes,
@@ -80,10 +89,20 @@ def run_pipeline(
     distance_threshold_km, time_threshold_s
 ):
     """Run the EarthCARE + Lightning collocation pipeline over a date range."""
+    logger = configure_logging()
     l_base = Path(lightning_base_path)
-
     current_date = start_date
+    current_month = None
+
     while current_date <= end_date:
+        # set processing-day tag
+        set_log_day(f"{current_date:%Y-%m-%d}")
+        month_key = (current_date.year, current_date.month)
+        if month_key != current_month:
+            # Switch log file when month changes (or first iteration)
+            set_monthly_log_file(log_dir, current_date.year, current_date.month)
+            current_month = month_key
+
         logger.info(f"Processing date: {current_date:%Y-%m-%d}")
         # NEW: find EC file pairs remotely via STAC, not local files
         try:

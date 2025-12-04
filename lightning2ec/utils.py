@@ -15,23 +15,69 @@ _EC_FILENAME_PATTERN = (
 
 logger = logging.getLogger(__name__)
 
-def configure_logging(
-    level: int = logging.INFO,
-    log_file: str = 'lightning2ec.log'
-) -> logging.Logger:
+# --- processing-day context ---
+_PROC_CTX = {"day": "-"}
+
+def set_log_day(day_str: str) -> None:
+    """Set the current processing day tag (YYYY-MM-DD)."""
+    _PROC_CTX["day"] = day_str
+
+
+class _ProcDayFilter(logging.Filter):
+    def filter(self, record):
+        record.proc = _PROC_CTX["day"]
+        return True
+
+
+def configure_logging(level: int = logging.INFO) -> logging.Logger:
     """
-    Set up the logging configuration for the project.
+    Configure the ROOT logger (console only).
+    File logging is attached separately per processing month.
     """
-    handlers = [
-        logging.FileHandler(log_file),
-        logging.StreamHandler()
-    ]
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=handlers
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Only configure once (avoid duplicate handlers)
+    if not root.handlers:
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - [proc=%(proc)s] - %(message)s'
+        )
+
+        sh = logging.StreamHandler()
+        sh.setFormatter(formatter)
+        sh.addFilter(_ProcDayFilter())
+        root.addHandler(sh)
+
+    return root
+
+
+def set_monthly_log_file(log_dir: str | Path, year: int, month: int) -> None:
+    """
+    Attach a FileHandler to the ROOT logger that writes to YYYY_MM.log
+    based on the *processing date*. Appends if the file already exists.
+    """
+    log_dir = Path(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    log_file = log_dir / f"{year:04d}_{month:02d}.log"
+    root = logging.getLogger()
+
+    # Remove existing FileHandler(s) so only one monthly file is active
+    for h in list(root.handlers):
+        if isinstance(h, logging.FileHandler):
+            root.removeHandler(h)
+            try:
+                h.close()
+            except Exception:
+                pass
+
+    fh = logging.FileHandler(log_file, mode="a")
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - [proc=%(proc)s] - %(message)s'
     )
-    return logging.getLogger()
+    fh.setFormatter(formatter)
+    fh.addFilter(_ProcDayFilter())
+    root.addHandler(fh)
 
 
 def find_ec_file_pairs(
