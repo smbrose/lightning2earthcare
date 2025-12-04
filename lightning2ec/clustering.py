@@ -91,7 +91,7 @@ def cluster_lightning_groups(
     lat_gap: float = 0.25
 ) -> xr.Dataset:
     """
-    Cluster LI groups in space-time using DBSCAN, after splitting into latitude chunks.
+    Cluster lightning groups in space-time using DBSCAN, after splitting into latitude chunks.
     Returns a copy of li_ds with a new variable 'cluster_id' (same length as groups).
 
     Parameters
@@ -112,82 +112,210 @@ def cluster_lightning_groups(
     xr.Dataset
         A copy of li_ds with new DataArray 'cluster_id' (int64), -1 denotes noise.
     """
-    ids  = li_ds["group_id"].values
-    lat  = li_ds["latitude"].values
-    lon  = li_ds["longitude"].values
-    time = li_ds["group_time"].values  # np.datetime64[ns]
+    MAX_GROUPS_PER_CHUNK = 150_000
 
+    ids   = li_ds["group_id"].values
+    f_ids = li_ds["flash_id"].values
+    lat   = li_ds["latitude"].values
+    lon   = li_ds["longitude"].values
+    time  = li_ds["group_time"].values  # np.datetime64[ns]
+
+    N = len(ids)
+    
     # Convert to minutes relative to first timestamp
     scale_factor_time = 1e9 * 60
     t_minutes = ((time - time.min()).astype("timedelta64[ns]").astype(np.int64)) / scale_factor_time
+    t_scaled = t_minutes * float(time_weight)
 
-    df = pd.DataFrame({
-        "id": ids,
-        "lat": lat,
-        "lon": lon,
-        "t_scaled": t_minutes * time_weight
-    }).sort_values("lat").reset_index(drop=True)
+    # --- Sort everything by latitude once ---
+    idx_sort = np.argsort(lat)
+    ids_s    = ids[idx_sort]
+    f_ids_s  = f_ids[idx_sort]
+    lat_s    = lat[idx_sort]
+    lon_s    = lon[idx_sort]
+    t_s      = t_scaled[idx_sort]
 
-    # Find latitude chunk boundaries
-    unique_lats = np.sort(np.unique(df["lat"].values))
+    # --- Compute latitude chunk boundaries ---
+    unique_lats = np.unique(lat_s)
     lat_diffs = np.diff(unique_lats)
     gap_idx = np.where(lat_diffs >= lat_gap)[0]
     boundaries = [unique_lats[0], *[unique_lats[i+1] for i in gap_idx], unique_lats[-1] + 1e-12]
 
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:6933", always_xy=True)
+    rng = np.random.default_rng()
 
-    all_parts = []
+    # Output arrays in *sorted* index space
+    cluster_id_sorted = np.full(N, -1, dtype=np.int64)
+    sampled_sorted = np.zeros(N, dtype=bool)  # True if this point was part of the sample
+
     label_offset = 0
+
+    # --- Process each latitude chunk ---
     for lo, hi in zip(boundaries[:-1], boundaries[1:]):
-        part = df[(df["lat"] >= lo) & (df["lat"] < hi)].copy()
-        if part.empty:
+        # indices in sorted space belonging to this chunk
+        mask_chunk = (lat_s >= lo) & (lat_s < hi)
+        chunk_idx = np.where(mask_chunk)[0]
+        n_chunk = chunk_idx.size
+        if n_chunk == 0:
             continue
 
-        x_m, y_m = transformer.transform(part["lon"].values, part["lat"].values)
-        X = np.stack([np.asarray(x_m) / 1000.0,  # km
-                      np.asarray(y_m) / 1000.0,
-                      part["t_scaled"].values], axis=1)
+        # --- Build sampling mask per chunk (in local chunk index space) ---
+        if n_chunk > MAX_GROUPS_PER_CHUNK:
+            # local mask for this chunk: length = n_chunk
+            sampled_chunk = np.zeros(n_chunk, dtype=bool)
+
+            f_chunk = f_ids_s[chunk_idx]
+            # Build mapping flash_id -> list of local indices within the chunk
+            flash_to_positions = {}
+            for local_pos, fid in enumerate(f_chunk):
+                if fid in flash_to_positions:
+                    flash_to_positions[fid].append(local_pos)
+                else:
+                    flash_to_positions[fid] = [local_pos]
+
+            n_flashes_chunk = len(flash_to_positions)
+
+            if n_flashes_chunk > MAX_GROUPS_PER_CHUNK:
+                print(
+                    f"Warning: chunk [{lo:.4f}, {hi:.4f}) has {n_flashes_chunk} flashes "
+                    f"> MAX_GROUPS_PER_CHUNK={MAX_GROUPS_PER_CHUNK}. "
+                    "Sampling one per flash (sample will exceed limit)."
+                )
+                max_target = n_flashes_chunk
+            else:
+                max_target = MAX_GROUPS_PER_CHUNK
+
+            # One representative per flash
+            for fid, positions in flash_to_positions.items():
+                positions = np.asarray(positions, dtype=int)
+                chosen_local = rng.choice(positions)
+                sampled_chunk[chosen_local] = True
+
+            current_sampled = int(sampled_chunk.sum())
+            remaining_capacity = max_target - current_sampled
+
+            if remaining_capacity > 0:
+                unsampled_local = np.where(~sampled_chunk)[0]
+                if unsampled_local.size > 0:
+                    if remaining_capacity < unsampled_local.size:
+                        extra_local = rng.choice(
+                            unsampled_local, size=remaining_capacity, replace=False
+                        )
+                    else:
+                        extra_local = unsampled_local
+                    sampled_chunk[extra_local] = True
+        else:
+            # Small chunk: all points sampled
+            sampled_chunk = np.ones(n_chunk, dtype=bool)
+
+        # Mark sampled points in global sorted space
+        sampled_idx_global = chunk_idx[sampled_chunk]
+        sampled_sorted[sampled_idx_global] = True
+
+        # --- Prepare sampled subset for DBSCAN ---
+        if sampled_idx_global.size == 0:
+            # no points to cluster in this chunk
+            continue
+
+        lat_sp = lat_s[sampled_idx_global]
+        lon_sp = lon_s[sampled_idx_global]
+        t_sp   = t_s[sampled_idx_global]
+
+        # Drop rows with NaNs / inf in lat, lon, t before projection
+        finite0 = (
+            np.isfinite(lat_sp) &
+            np.isfinite(lon_sp) &
+            np.isfinite(t_sp)
+        )
+        if not finite0.all():
+            lat_sp = lat_sp[finite0]
+            lon_sp = lon_sp[finite0]
+            t_sp   = t_sp[finite0]
+            sampled_idx_global = sampled_idx_global[finite0]
+
+        if lat_sp.size == 0:
+            continue
+
+        x_m, y_m = transformer.transform(lon_sp, lat_sp)
+        X = np.stack(
+            [np.asarray(x_m) / 1000.0,
+             np.asarray(y_m) / 1000.0,
+             t_sp],
+            axis=1,
+        )
+
+        # Drop any rows with NaN/inf produced by projection
+        finite = np.isfinite(X).all(axis=1)
+        if not finite.all():
+            X = X[finite]
+            sampled_idx_global = sampled_idx_global[finite]
+
+        if X.shape[0] == 0:
+            continue
 
         db = DBSCAN(eps=eps, min_samples=min_samples, metric="euclidean")
-        labels = db.fit_predict(X)
+        labels = db.fit_predict(X)  # shape (n_valid,)
 
         # Offset cluster labels (leave noise = -1)
         pos = labels != -1
-        labels[pos] += label_offset
+        labels_offset = labels.copy()
+        labels_offset[pos] += label_offset
         if np.any(pos):
-            label_offset = labels[pos].max() + 1
+            label_offset = labels_offset[pos].max() + 1
 
         # reassign clusters with <20 members to noise
         if np.any(pos):
-            unique, counts = np.unique(labels[pos], return_counts=True)
-            small_clusters = unique[counts < 20]
+            unique_lbl, counts_lbl = np.unique(labels_offset[pos], return_counts=True)
+            small_clusters = unique_lbl[counts_lbl < 20]
             if small_clusters.size:
-                mask_small = np.isin(labels, small_clusters)
-                labels[mask_small] = -1
+                mask_small = np.isin(labels_offset, small_clusters)
+                labels_offset[mask_small] = -1
 
-        part["cluster_id"] = labels
-        all_parts.append(part[["id", "cluster_id"]])
+        # Write labels into cluster_id_sorted for these sampled, valid rows
+        cluster_id_sorted[sampled_idx_global] = labels_offset
 
-    if all_parts:
-        labels_all = pd.concat(all_parts, ignore_index=True)
-        label_map = dict(zip(labels_all["id"], labels_all["cluster_id"]))
-        unique_clusters = np.unique(labels_all["cluster_id"].values)
-        n_clusters_total = len(unique_clusters[unique_clusters != -1])
-        if n_clusters_total == 0:
-            logger.info("No clusters found (all points classified as noise).")
-            return None
-        else:
-            logger.info(f"Total clusters found: {n_clusters_total}")
-    else:
-        logger.info("No clusters found (no valid points).")
+    # --- Majority-vote for unsampled points (in sorted space) ---
+    # First, build majority cluster per flash_id, using only sampled & non-noise points
+    from collections import defaultdict
+
+    flash_clusters = defaultdict(list)
+    valid_sampled_mask = sampled_sorted & (cluster_id_sorted != -1)
+
+    for idx in np.where(valid_sampled_mask)[0]:
+        fid = f_ids_s[idx]
+        cid = int(cluster_id_sorted[idx])
+        flash_clusters[fid].append(cid)
+
+    majority_map = {}
+    for fid, cids in flash_clusters.items():
+        if not cids:
+            continue
+        vals, counts = np.unique(cids, return_counts=True)
+        majority_map[fid] = int(vals[np.argmax(counts)])
+
+    # Assign unsampled points to flash majority cluster if available
+    unsampled_mask = (~sampled_sorted)
+    for idx in np.where(unsampled_mask)[0]:
+        fid = f_ids_s[idx]
+        if fid in majority_map:
+            cluster_id_sorted[idx] = majority_map[fid]
+
+    # --- Map back from sorted order to original dataset order ---
+    cluster_id_orig = np.empty(N, dtype=np.int64)
+    cluster_id_orig[idx_sort] = cluster_id_sorted
+
+    unique_clusters = np.unique(cluster_id_orig)
+    n_clusters_total = int(np.sum(unique_clusters != -1))
+    if n_clusters_total == 0:
+        logger.info("No clusters found (all points classified as noise).")
         return None
+    else:
+        logger.info(f"Total clusters found: {n_clusters_total}")
 
-    # Map back to dataset order
-    mapped = pd.Series(ids).map(label_map).fillna(-1).astype("int64").values
-
+    # Attach cluster_id to dataset
     out = li_ds.copy()
     out["cluster_id"] = xr.DataArray(
-        mapped,
+        cluster_id_orig,
         dims=li_ds["group_id"].dims,
         attrs={
             "long_name": "Cluster ID",
@@ -195,8 +323,8 @@ def cluster_lightning_groups(
             "units": "1",
         },
     )
-    
-    # Filter out bad groups and clusters based on quality
+
+    # Quality filtering as before
     out = filter_clusters_by_quality(out)
 
     return out
