@@ -136,7 +136,7 @@ def merge_li_datasets(nc_files: List[Path]) -> xr.Dataset:
 
     # Concatenate all datasets along the 'groups' dimension
     try:
-        combined_ds = xr.concat(datasets, dim="groups")
+        combined_ds = xr.concat(datasets, dim="groups", data_vars="all")
         logger.info(f"Successfully merged {len(datasets)} BODY files into a single dataset.")
         return combined_ds
     except Exception as e:

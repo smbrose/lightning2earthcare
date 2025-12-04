@@ -200,35 +200,31 @@ def load_merge_glm(
     # ---- helper: open+preprocess ONE file ----
     def _open_and_preprocess_one(url: str) -> xr.Dataset | None:
         """
-        Open a single GLM file lazily with chunks and apply cleanup + latitude clip.
+        Open a single GLM file lazily and apply cleanup + latitude clip.
         Returns None if nothing remains after clipping.
         """
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r"The specified chunks separate the stored chunks",
-                category=UserWarning,
-                module="xarray.core.dataset"
+        try:
+            # Let xarray choose sensible chunks based on the store
+            ds = xr.open_dataset(
+                fs.open(url, mode='rb'),
+                engine='h5netcdf',
+                chunks="auto",   # or omit 'chunks' entirely
+            )
+        except Exception:
+            ds = xr.open_dataset(
+                fs.open(url, mode='rb'),
+                engine='netcdf4',
+                chunks="auto",
             )
 
-            try:
-                ds = xr.open_dataset(
-                    fs.open(url, mode='rb'),
-                    engine='h5netcdf',
-                    chunks={'number_of_groups': chunksize, 'groups': chunksize}
-                )
-            except Exception:
-                ds = xr.open_dataset(
-                    fs.open(url, mode='rb'),
-                    engine='netcdf4',
-                    chunks={'number_of_groups': chunksize, 'groups': chunksize}
-                )
-
-        # 2. standardize the dimension name
+        # NOW rechunk along groups AFTER loading
         if 'number_of_groups' in ds.dims:
+            ds = ds.chunk({'number_of_groups': chunksize})
             ds = ds.rename({'number_of_groups': 'groups'})
+        elif 'groups' in ds.dims:
+            ds = ds.chunk({'groups': chunksize})
 
-        # 3. promote coords with 'groups' dim to data vars (so we keep lat/lon/etc as normal vars)
+        # 3. promote coords with 'groups' dim to data vars
         coord_names = [c for c in ds.coords if 'groups' in getattr(ds[c], 'dims', ())]
         if coord_names:
             ds = ds.reset_coords(names=coord_names, drop=False)
