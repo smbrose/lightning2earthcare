@@ -112,7 +112,7 @@ def match_li_to_ec(
                     "groups",
                     group_time_ns,
                     {
-                        "long_name": "Start time of integration frame",
+                        "long_name": "Time of lightning group",
                         "standard_name": "time",
                     },
                 ),
@@ -261,7 +261,7 @@ def match_glm_to_ec(
                     "groups",
                     group_time_ns,
                     {
-                        "long_name": "Start time of integration frame",
+                        "long_name": "Time of lightning group",
                         "standard_name": "time",
                     },
                 ),
@@ -465,9 +465,25 @@ def build_cpr_summary2(
         else:
             strict_dicts[i] = {}
 
-    # --- NetCDF-safe JSON for per-cluster dicts
-    loose_json  = np.array([json.dumps(d, separators=(",", ":")) for d in loose_dicts])
-    strict_json = np.array([json.dumps(d, separators=(",", ":")) for d in strict_dicts])
+    # --- Numeric per-cluster representation
+    max_clusters = max(
+        max(len(d) for d in loose_dicts),
+        max(len(d) for d in strict_dicts),
+    )
+
+    if max_clusters == 0:
+        max_clusters = 1  # ensure at least one column
+
+    subcluster_id_arr = np.full((n_cpr, max_clusters), np.nan, dtype=np.float64)
+    li_count_loose_arr = np.full((n_cpr, max_clusters), np.nan, dtype=np.float64)
+    li_count_strict_arr = np.full((n_cpr, max_clusters), np.nan, dtype=np.float64)
+
+    for i in range(n_cpr):
+        clusters = sorted(set(loose_dicts[i].keys()) | set(strict_dicts[i].keys()))
+        for j, cid in enumerate(clusters[:max_clusters]):
+            subcluster_id_arr[i, j] = float(cid)
+            li_count_loose_arr[i, j] = float(loose_dicts[i].get(cid, 0))
+            li_count_strict_arr[i, j] = float(strict_dicts[i].get(cid, 0))
 
     # --- summary dataset
     cpr_summary_ds = xr.Dataset(
@@ -481,10 +497,14 @@ def build_cpr_summary2(
                 "long_name": f"Lightning groups count within ≤{r1} km and ≤{int(t1)} s", "units": "1"}),
             li_count_strict=("cpr", li_count_strict, {
                 "long_name": f"Lightning groups count within ≤{r2} km and ≤{int(t2)} s", "units": "1"}),
-            li_count_loose_per_cluster=("cpr", loose_json, {
-                "long_name": "Loose per-cluster counts (JSON: {subcluster_id: count})", "content_encoding": "json"}),
-            li_count_strict_per_cluster=("cpr", strict_json, {
-                "long_name": "Strict per-cluster counts (JSON: {subcluster_id: count})", "content_encoding": "json"}),
+            subcluster_id=(("cpr", "cluster"), subcluster_id_arr, {
+                "long_name": "Subcluster identifier per CPR sample"}),
+            li_count_loose_per_cluster=(("cpr", "cluster"), li_count_loose_arr, {
+                "long_name": f"Lightning groups count per subcluster within ≤{r1} km and ≤{int(t1)} s",
+                "units": "1"}),
+            li_count_strict_per_cluster=(("cpr", "cluster"), li_count_strict_arr, {
+                "long_name": f"Lightning groups count per subcluster within ≤{r2} km and ≤{int(t2)} s",
+                "units": "1"}),
         )
     )
 

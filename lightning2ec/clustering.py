@@ -320,7 +320,6 @@ def cluster_lightning_groups(
         attrs={
             "long_name": "Cluster ID",
             "description": f"DBSCAN clustering (eps={eps}, time_weight={time_weight}, min_samples={min_samples}); -1 = noise",
-            "units": "1",
         },
     )
 
@@ -402,7 +401,6 @@ def subcluster_lightning_groups(
         attrs={
             "long_name": "Subcluster ID within parent clusters",
             "description": f"DBSCAN clustering (eps={eps}, time_weight={time_weight}, min_samples={min_samples}); -1 = noise",
-            "units": "1",
         },
     )
 

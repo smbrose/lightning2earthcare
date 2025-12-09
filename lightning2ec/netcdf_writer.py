@@ -115,7 +115,7 @@ def write_lightning_netcdf(
             references = "https://user.eumetsat.int/resources/user-guides/mtg-li-level-2-data-guide, https://earth.esa.int/eogateway/missions/earthcare"
 
         ds.attrs.update({
-            "conventions": "CF-1.12",
+            "Conventions": "CF-1.8",
             "title": title,
             "summary": summary,
             "institution": "European Space Agency (ESA)",
@@ -129,6 +129,17 @@ def write_lightning_netcdf(
             "time_coverage_start": time_min + "Z",
             "time_coverage_end": time_max + "Z",
         })
+
+        # Ensure time variable is encoded correctly
+        if "group_time" in ds:
+            time_var = ds["group_time"]
+            # Clear any existing automatic encoding
+            time_var.encoding.clear()
+            # Tell xarray to store it as seconds since a clean epoch
+            time_var.encoding.update({
+                "units": "seconds since 2000-01-01 00:00:00",
+                "dtype": "float64",
+            })
 
         ds.to_netcdf(path=str(output_path), engine="h5netcdf")
         logger.info(f"Saved NetCDF to {output_path}")
@@ -166,13 +177,24 @@ def write_track_netcdf(
             src_desc = f"EarthCARE CPR + EUMETSAT MTG Lightning Imager (LI) L2 (platform: {platform})"
 
         ds.attrs.update({
-            "conventions": "CF-1.12",
+            "Conventions": "CF-1.8",
             "title": title,
             "summary": summary,
             "institution": "European Space Agency (ESA)",
             "history": f"Created on {date_str}",
             "source": src_desc,
         })
+
+        # Ensure time variable is encoded correctly
+        if "time" in ds:
+            time_var = ds["time"]
+            # Clear any existing automatic encoding
+            time_var.encoding.clear()
+            # Tell xarray to store it as seconds since a clean epoch
+            time_var.encoding.update({
+                "units": "seconds since 2000-01-01 00:00:00",
+                "dtype": "float64",
+            })
 
         ds.to_netcdf(path=str(output_path), engine="h5netcdf")
         logger.info(f"Saved CPR summary NetCDF to {output_path}")
