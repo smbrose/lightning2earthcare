@@ -90,12 +90,18 @@ def prepare_ec2(msi_url):
     """
     logger.info(f"Fetching MSI dataset from {msi_url}")
 
-    msi_ds = fetch_earthcare_data(msi_url)
+    try:
+        msi_ds = fetch_earthcare_data(msi_url)
+
+    except Exception as e:
+        logger.error(f"Failed to fetch MSI data from {msi_url}: {e}")
+        return None
 
     required_vars = ["longitude", "latitude", "cloud_top_height", "time"]
     for var in required_vars:
         if var not in msi_ds:
-            raise KeyError(f"Missing expected variable '{var}' in MSI dataset")
+            logger.error(f"Missing variable '{var}' in MSI dataset")
+            return None
 
     lon = msi_ds["longitude"].values
     lat = msi_ds["latitude"].values

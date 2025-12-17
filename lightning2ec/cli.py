@@ -130,8 +130,14 @@ def run_pipeline(
             msi_url = file_map[products[0]]
             cpr_url = file_map[products[1]]
 
-            # NEW: URLs directly into prepare_ec2()
-            ec_lon, ec_lat, ec_cth, ec_times = prepare_ec2(msi_url)
+            # URLs directly into prepare_ec2()
+            result = prepare_ec2(msi_url)
+            # If MSI fetch failed → skip entire orbit
+            if result is None:
+                logger.error(f"Skipping orbit {orbit_frame} because MSI could not be loaded.")
+                continue
+
+            ec_lon, ec_lat, ec_cth, ec_times = result
 
             selections = is_within_satellite_range(ec_lon, ec_times, integration_minutes,
                                                    allowed_platforms=tuple(lightning_platforms))

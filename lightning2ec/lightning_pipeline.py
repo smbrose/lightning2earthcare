@@ -107,7 +107,11 @@ def process_one_source(
     )
     del subclustered
     gc.collect()
-
+    # skip this orbit if CPR couldn’t be loaded
+    if final_ds is None:
+        logger.error(f"[{orbit_frame}/{source_key}] CPR summary could not be built; skipping this orbit/source.")
+        return
+    
     # 7) Write
     write_lightning_netcdf(final_ds, l_base, orbit_frame, close_count, source_label=source_key, platform=platform)
     if np.max(track_ds.li_count_loose.values) > 0:

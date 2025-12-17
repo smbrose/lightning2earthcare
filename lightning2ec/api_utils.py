@@ -1,6 +1,6 @@
 import fsspec
 import xarray as xr
-import os
+import time
 from pystac_client import Client  # Ensure pystac-client is installed
 import requests
 import logging
@@ -61,7 +61,7 @@ def parse_orbit_frame_from_id(item_id: str):
     except Exception:
         return None, None
 
-def fetch_earthcare_data(ds_url, group="ScienceData"):
+def fetch_earthcare_data(ds_url, group="ScienceData", retries=5, delay=10):
     """
     Fetch EarthCARE data from a remote HTTPS URL and return it as an xarray.Dataset.
 
@@ -79,10 +79,26 @@ def fetch_earthcare_data(ds_url, group="ScienceData"):
 
     token = get_earthcare_token()
 
-    fs = fsspec.filesystem("https", headers={"Authorization": f"Bearer {token}"})
-    with fs.open(ds_url, "rb") as f:
-        ds = xr.open_dataset(f, engine="h5netcdf", group=group)
-        ds.load()  # load into memory
+    last_exception = None
 
-    logger.info(f"Successfully loaded dataset: {ds_url}")
-    return ds
+    for attempt in range(1, retries + 1):
+        try:
+            fs = fsspec.filesystem("https", headers={"Authorization": f"Bearer {token}"})
+            with fs.open(ds_url, "rb") as f:
+                ds = xr.open_dataset(f, engine="h5netcdf", group=group)
+                ds.load()
+
+            logger.info(f"Successfully loaded dataset: {ds_url}")
+            return ds
+
+        except Exception as e:
+            last_exception = e
+            logger.warning(
+                f"Attempt {attempt} failed: {e.__class__.__name__}: {e}. "
+                f"Retrying in {delay} seconds..."
+            )
+            time.sleep(delay)
+
+    # If all retries exhausted, raise last error
+    logger.error(f"Failed to load dataset after {retries} attempts.")
+    raise last_exception

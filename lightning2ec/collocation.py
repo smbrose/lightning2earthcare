@@ -319,9 +319,13 @@ from .api_utils import fetch_earthcare_data
 def build_cpr_summary2(
     matched_ds: xr.Dataset, cpr_url: str, distance_threshold_km=5.0, time_threshold_s=300
 ) -> tuple[xr.Dataset, int, xr.Dataset]:
-    # --- load LI
-    # --- load CPR dataset remotely instead of from local file
-    cpr = fetch_earthcare_data(cpr_url, group="ScienceData")
+    # load CPR dataset remotely
+    try:
+        cpr = fetch_earthcare_data(cpr_url, group="ScienceData")
+    except Exception as e:
+        logger.error(f"Failed to fetch CPR data from {cpr_url}: {e}")
+        # Signal failure: no outputs, no “close” counts
+        return None, 0, None
 
     c_lat = np.asarray(cpr["latitude"].values, float)
     c_lon = np.asarray(cpr["longitude"].values, float)
