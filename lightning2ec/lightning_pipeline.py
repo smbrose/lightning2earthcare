@@ -1,5 +1,6 @@
 import numpy as np
 import logging
+import gc
 from .preprocess import merge_li_datasets, buffer_lightning_data
 from .clustering import cluster_lightning_groups, subcluster_lightning_groups
 from .parallax import apply_parallax_shift
@@ -51,12 +52,16 @@ def process_one_source(
     if buf_ds is None:
         logger.info(f"[{source_key}] no points in buffer; skipping.")
         return
+    del ds_merged
+    gc.collect()
 
     # 3) Cluster
     clustered = cluster_lightning_groups(buf_ds, eps=5.0, time_weight=0.5, min_samples=20, lat_gap=0.25)
     if clustered is None:
         logger.info(f"[{source_key}] no clusters; skipping.")
         return
+    del buf_ds
+    gc.collect()
     
     if source_key == 'LI':
         # 4) Parallax shift
@@ -83,6 +88,8 @@ def process_one_source(
             ec_lat, ec_lon,
             time_threshold_s=time_threshold_s
         )
+    del clustered
+    gc.collect()
 
     if matched_ds is None:
         logger.info(f"[{source_key}] no matches found; skipping.")
@@ -90,6 +97,7 @@ def process_one_source(
     
     # NEW: Sub-cluster matched points
     subclustered = subcluster_lightning_groups(matched_ds, eps=5.0, time_weight=0.5, min_samples=20)
+    del matched_ds
 
     # 6) CPR summary
     final_ds, close_count, track_ds = build_cpr_summary2(
@@ -97,6 +105,8 @@ def process_one_source(
         distance_threshold_km=distance_threshold_km,
         time_threshold_s=time_threshold_s
     )
+    del subclustered
+    gc.collect()
 
     # 7) Write
     write_lightning_netcdf(final_ds, l_base, orbit_frame, close_count, source_label=source_key, platform=platform)

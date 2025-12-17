@@ -341,12 +341,15 @@ def subcluster_lightning_groups(
 
     Adds 'subcluster_id' (float64): NaN = unmatched, -1 = noise.
     """
+    # Hard limit on number of points per parent cluster to avoid memory issues
+    MAX_POINTS_PER_CLUSTER = 60_000
 
     # Extract core variables
     lat = matched_ds["latitude"].values
     lon = matched_ds["longitude"].values
     time = matched_ds["group_time"].values
     cluster = matched_ds["cluster_id"].values
+    flash_id = matched_ds["flash_id"].values
     valid = ~np.isnat(matched_ds["ec_time_diff"].values)
 
     # Initialize with NaN (unmatched)
@@ -355,7 +358,9 @@ def subcluster_lightning_groups(
     # Transformer for projected coordinates (distance in km)
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:6933", always_xy=True)
 
+    rng = np.random.default_rng()
     label_offset = 0
+
     for cid in np.unique(cluster):
         if cid < 0:
             continue
@@ -365,9 +370,60 @@ def subcluster_lightning_groups(
         if not np.any(mask):
             continue
 
-        lat_c = lat[mask]
-        lon_c = lon[mask]
-        t_c = time[mask]
+        idx_cluster = np.where(mask)[0]
+        n_cluster = idx_cluster.size
+
+        # --- Sampling inside this parent cluster ---
+        if n_cluster > MAX_POINTS_PER_CLUSTER:
+            # local indices 0..n_cluster-1
+            sampled_local = np.zeros(n_cluster, dtype=bool)
+
+            f_c = flash_id[idx_cluster]
+
+            # flash_id -> list of local positions in this cluster
+            flash_to_positions = {}
+            for local_pos, fid in enumerate(f_c):
+                if fid in flash_to_positions:
+                    flash_to_positions[fid].append(local_pos)
+                else:
+                    flash_to_positions[fid] = [local_pos]
+
+            n_flashes = len(flash_to_positions)
+            max_target = MAX_POINTS_PER_CLUSTER
+
+            # One representative per flash
+            for positions in flash_to_positions.values():
+                positions = np.asarray(positions, dtype=int)
+                chosen_local = rng.choice(positions)
+                sampled_local[chosen_local] = True
+
+            current_sampled = int(sampled_local.sum())
+            remaining_capacity = max_target - current_sampled
+
+            if remaining_capacity > 0:
+                unsampled_local = np.where(~sampled_local)[0]
+                if unsampled_local.size > 0:
+                    if remaining_capacity < unsampled_local.size:
+                        extra_local = rng.choice(
+                            unsampled_local,
+                            size=remaining_capacity,
+                            replace=False,
+                        )
+                    else:
+                        extra_local = unsampled_local
+                    sampled_local[extra_local] = True
+        else:
+            # Small cluster: all points sampled
+            sampled_local = np.ones(n_cluster, dtype=bool)
+
+        sampled_idx = idx_cluster[sampled_local]
+        if sampled_idx.size == 0:
+            continue
+
+        # --- DBSCAN on sampled points ---
+        lat_c = lat[sampled_idx]
+        lon_c = lon[sampled_idx]
+        t_c   = time[sampled_idx]
 
         # Convert group_time to minutes relative to first timestamp
         t_minutes = ((t_c - t_c.min()).astype("timedelta64[ns]").astype(np.int64)
@@ -391,8 +447,38 @@ def subcluster_lightning_groups(
             labels[pos] += label_offset
             label_offset = labels[pos].max() + 1
 
-        sub_ids[mask] = labels
+        # Assign labels for sampled points
+        sub_ids[sampled_idx] = labels
 
+        # --- Propagate labels to unsampled points via flash majority ---
+        unsampled_idx = idx_cluster[~sampled_local]
+        if unsampled_idx.size > 0:
+            from collections import defaultdict
+
+            flash_clusters = defaultdict(list)
+
+            # Use all sampled labels (including noise) for majority vote
+            for gi in sampled_idx:
+                lbl = sub_ids[gi]
+                if np.isnan(lbl):
+                    continue
+                fid = flash_id[gi]
+                flash_clusters[fid].append(int(lbl))
+
+            for gi in unsampled_idx:
+                fid = flash_id[gi]
+                labels_for_flash = flash_clusters.get(fid, [])
+                if labels_for_flash:
+                    vals, counts = np.unique(labels_for_flash, return_counts=True)
+                    maj_label = int(vals[np.argmax(counts)])
+                    sub_ids[gi] = float(maj_label)
+                else:
+                    # Fallback: if we somehow have no info for this flash, mark as noise
+                    sub_ids[gi] = -1.0
+    # logging
+    total_subclusters = np.nansum(np.unique(sub_ids) != -1)
+    logger.info(f"Total subclusters created: {total_subclusters}")
+    
     # Attach to dataset
     out = matched_ds.copy()
     out["subcluster_id"] = xr.DataArray(

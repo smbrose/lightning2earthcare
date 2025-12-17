@@ -132,8 +132,7 @@ def load_merge_glm(
     end_time,
     platform: str,
     product: str = _GLM_PRODUCT,
-    chunksize: int = 10000, # native chunksize 256, but the performance is better with larger chunks
-    max_workers: int = 8,
+    max_workers: int = 2,
 ) -> xr.Dataset | None:
     """
     Open GOES GLM L2 (LCFA) NetCDFs directly from NOAA S3 for a time window
@@ -217,12 +216,8 @@ def load_merge_glm(
                 chunks="auto",
             )
 
-        # NOW rechunk along groups AFTER loading
         if 'number_of_groups' in ds.dims:
-            ds = ds.chunk({'number_of_groups': chunksize})
             ds = ds.rename({'number_of_groups': 'groups'})
-        elif 'groups' in ds.dims:
-            ds = ds.chunk({'groups': chunksize})
 
         # 3. promote coords with 'groups' dim to data vars
         coord_names = [c for c in ds.coords if 'groups' in getattr(ds[c], 'dims', ())]
