@@ -320,7 +320,7 @@ def is_within_satellite_range(
 
     if selections:
         for s in selections:
-            logger.info(f"Selected {s['source']} ({s['platform']}): {s['start_time']} → {s['end_time']} | {s['reason']}")
+            logger.info(f"Selected {s['source']} ({s['platform']}): {s['start_time']} -> {s['end_time']} | {s['reason']}")
     else:
         logger.info(f"No lightning coverage for EC lon [{lon_min_ec:.1f},{lon_max_ec:.1f}].")
 

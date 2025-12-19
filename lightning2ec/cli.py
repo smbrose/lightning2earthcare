@@ -151,7 +151,7 @@ def run_pipeline(
                 t0         = sel['start_time']
                 t1         = sel['end_time']
 
-                logger.info(f"{orbit_frame}: processing {source_key} ({platform}) {t0} → {t1}")
+                logger.info(f"{orbit_frame}: processing {source_key} ({platform}) {t0} -> {t1}")
                 process_one_source(
                     source_key, platform, 
                     t0, t1,
