@@ -58,7 +58,7 @@ def download_li(
         entries = list(product.entries)
         matches = [e for e in entries if fnmatch(e, "*BODY*.nc")]
         if not matches:
-            logger.warning(f"No *BODY*.nc entry found for {product.id}")
+            logger.warning(f"No *BODY*.nc entry found for {product._id}")
             continue
 
         for entry in matches:
@@ -79,7 +79,7 @@ def download_li(
                     target_dirs.append(nc_path)
 
             except Exception as e:
-                logger.error(f"Error handling product {product.id} / entry {entry}: {e}")
+                logger.error(f"Error handling product {product._id} / entry {entry}: {e}")
 
     return target_dirs
 
